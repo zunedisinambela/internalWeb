@@ -49,7 +49,14 @@ This gate is not optional: `opcodesio/log-viewer` only locks itself down when `A
 exactly `production` (`AuthorizeLogViewer` middleware checks `App::isProduction()`), so without
 it staging and every other environment serve log contents to anonymous visitors.
 
-**Permissions** — Shield generated 24 permissions named `Action:Subject` (`ViewAny:Activity`).
+**Managing users** — `/admin/users` (`app/Filament/Resources/Users/`) creates accounts, sets
+passwords and assigns roles. Since a role is what grants access, this screen is how someone
+gets into the panel at all. Note it does not restrict *which* role may be handed out: anyone
+who can reach it can grant `super_admin`, including to themselves. That is fine while only
+super admins hold `Create:User`, but a future staff role with user-management permissions
+would be able to self-promote unless the role select is constrained.
+
+**Permissions** — Shield generated 36 permissions named `Action:Subject` (`ViewAny:Activity`).
 `super_admin` holds all of them and short-circuits every check through a `Gate::before` hook
 (`filament-shield.super_admin.intercept_gate`). Regenerate after adding a resource:
 
@@ -146,6 +153,13 @@ eager-loads `causer` and `subject` because both are morphs and cannot be joined.
   see `ActivityInfolist::stringifyValues()`.
 - `CodeEntry` requires the `phiki` package, which is not installed. Use a `TextEntry` with
   `FontFamily::Mono` for JSON blobs instead.
+- Password fields on an edit form must use `->dehydrated(fn ($state) => filled($state))`, or
+  saving any other field overwrites the stored hash with an empty string and locks the account
+  out silently. A confirmation field pairs with `->confirmed()` and `->dehydrated(false)`.
+- Put record-level authorization on the resource (`canDelete()` etc.), not on the action button.
+  Filament consults the resource for row actions *and* for every record inside a bulk action;
+  a check on `->visible()` alone leaves the bulk path open. `UserResource::canDelete()` refuses
+  self-deletion this way.
 - Dashboard widgets: `AccountWidget` only. Filament's default `FilamentInfoWidget` (version /
   docs / GitHub branding card) was deliberately removed from `->widgets([...])` — do not add it
   back when regenerating or upgrading the panel provider.
@@ -163,6 +177,7 @@ eager-loads `causer` and `subject` because both are morphs and cannot be joined.
 | `UserActivityLoggingTest` | what is logged, what is never logged, causer, role grant/revoke |
 | `ActivityLogPanelTest` | list and view pages render, resource stays read-only |
 | `LogViewerAccessTest` | guests and roleless users blocked from the page *and* the API |
+| `UserResourceTest` | password hashing, blank-password edits, confirmation, self-delete refusal |
 
 `Tests\TestCase` provides `userWithRole()`, `superAdmin()` and `seedRoles()`. Roles come from
 `ShieldSeeder` so tests exercise the same data a deploy produces, and the permission cache is
