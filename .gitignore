@@ -15,7 +15,10 @@
 /auth.json
 /node_modules
 /public/build
+/public/css/filament
+/public/fonts/filament
 /public/fonts-manifest.dev.json
+/public/js/filament
 /public/hot
 /public/storage
 /storage/*.key
