@@ -29,12 +29,15 @@ class AppServiceProvider extends ServiceProvider
      *
      * Without this gate opcodesio/log-viewer only locks itself down when
      * APP_ENV is exactly "production" (see AuthorizeLogViewer middleware),
-     * leaving staging and any other environment wide open. Log files carry
-     * stack traces, request payloads and email addresses, so the viewer is
-     * treated as an admin surface: sign-in required everywhere.
+     * leaving staging and any other environment wide open.
+     *
+     * The rule matches User::canAccessPanel() on purpose. Raw log files carry
+     * stack traces, request payloads and email addresses, so anyone refused by
+     * the admin panel must be refused here too — otherwise the weaker gate
+     * becomes the way around the stronger one.
      */
     protected function registerLogViewerGate(): void
     {
-        Gate::define('viewLogViewer', fn (?User $user): bool => $user !== null);
+        Gate::define('viewLogViewer', fn (?User $user): bool => (bool) $user?->is_admin);
     }
 }

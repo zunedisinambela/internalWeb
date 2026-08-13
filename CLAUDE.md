@@ -35,10 +35,14 @@ Two independent gates. Neither is a role system; both are single booleans.
 *and* on every request through `Http/Middleware/Authenticate.php`, so revoking the flag ends a
 live session on the next page load. Non-admins get 403, guests are redirected to login.
 
-**Log viewer** — the `viewLogViewer` gate in `AppServiceProvider` requires any authenticated
-user. This gate is not optional: `opcodesio/log-viewer` only locks itself down when `APP_ENV`
-is exactly `production` (`AuthorizeLogViewer` middleware checks `App::isProduction()`), so
-without it staging and every other environment serve log contents to anonymous visitors.
+**Log viewer** — the `viewLogViewer` gate in `AppServiceProvider` requires `is_admin`, the same
+rule as the panel. Keep the two in step: raw log files expose more than the panel does, so a
+weaker gate here would be a way around the stronger one.
+`LogViewerAccessTest::test_log_viewer_access_matches_panel_access` asserts they agree.
+
+This gate is not optional: `opcodesio/log-viewer` only locks itself down when `APP_ENV` is
+exactly `production` (`AuthorizeLogViewer` middleware checks `App::isProduction()`), so without
+it staging and every other environment serve log contents to anonymous visitors.
 
 ## Gotchas
 
