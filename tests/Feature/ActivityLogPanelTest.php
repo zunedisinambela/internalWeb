@@ -14,15 +14,7 @@ class ActivityLogPanelTest extends TestCase
 
     protected function admin(): User
     {
-        $user = User::create([
-            'name' => 'Admin',
-            'email' => 'admin@admin.com',
-            'password' => 'admin',
-        ]);
-
-        $user->grantAdmin();
-
-        return $user;
+        return $this->superAdmin();
     }
 
     public function test_list_page_renders_for_an_authenticated_user(): void

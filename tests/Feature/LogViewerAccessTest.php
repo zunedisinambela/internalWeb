@@ -2,28 +2,12 @@
 
 namespace Tests\Feature;
 
-use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class LogViewerAccessTest extends TestCase
 {
     use RefreshDatabase;
-
-    protected function user(bool $isAdmin): User
-    {
-        $user = User::create([
-            'name' => $isAdmin ? 'Admin' : 'Staff',
-            'email' => $isAdmin ? 'admin@admin.com' : 'staff@admin.com',
-            'password' => 'secret',
-        ]);
-
-        if ($isAdmin) {
-            $user->grantAdmin();
-        }
-
-        return $user;
-    }
 
     public function test_guests_cannot_open_the_log_viewer(): void
     {
@@ -35,23 +19,23 @@ class LogViewerAccessTest extends TestCase
         $this->getJson('/log-viewer/api/files')->assertForbidden();
     }
 
-    public function test_non_admins_cannot_open_the_log_viewer(): void
+    public function test_users_without_a_role_cannot_open_the_log_viewer(): void
     {
-        $this->actingAs($this->user(false))
+        $this->actingAs($this->userWithRole(null))
             ->get('/log-viewer')
             ->assertForbidden();
     }
 
-    public function test_non_admins_cannot_reach_the_log_viewer_api(): void
+    public function test_users_without_a_role_cannot_reach_the_log_viewer_api(): void
     {
-        $this->actingAs($this->user(false))
+        $this->actingAs($this->userWithRole(null))
             ->getJson('/log-viewer/api/files')
             ->assertForbidden();
     }
 
-    public function test_admins_can_open_the_log_viewer(): void
+    public function test_super_admins_can_open_the_log_viewer(): void
     {
-        $this->actingAs($this->user(true))
+        $this->actingAs($this->superAdmin())
             ->get('/log-viewer')
             ->assertOk();
     }
@@ -62,16 +46,16 @@ class LogViewerAccessTest extends TestCase
      */
     public function test_log_viewer_access_matches_panel_access(): void
     {
-        foreach ([true, false] as $isAdmin) {
-            $user = $this->user($isAdmin);
+        foreach ([true, false] as $hasRole) {
+            $user = $hasRole ? $this->superAdmin() : $this->userWithRole(null);
 
             $this->assertSame(
-                $isAdmin,
+                $hasRole,
                 $this->actingAs($user)->get('/log-viewer')->isOk(),
             );
 
             $this->assertSame(
-                $isAdmin,
+                $hasRole,
                 $this->actingAs($user)->get('/admin')->isOk(),
             );
 

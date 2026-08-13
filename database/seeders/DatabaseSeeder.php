@@ -14,7 +14,10 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
+        // Order matters: AdminUserSeeder assigns the super_admin role, so the
+        // roles and permissions have to exist first.
         $this->call([
+            ShieldSeeder::class,
             AdminUserSeeder::class,
         ]);
     }

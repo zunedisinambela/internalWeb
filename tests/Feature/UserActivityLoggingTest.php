@@ -32,19 +32,6 @@ class UserActivityLoggingTest extends TestCase
         $this->assertSame($user->getKey(), $activity->subject_id);
     }
 
-    public function test_privilege_escalation_is_recorded(): void
-    {
-        $user = $this->user();
-
-        $user->grantAdmin();
-
-        $activity = Activity::latest('id')->first();
-
-        $this->assertSame('updated', $activity->event);
-        $this->assertSame(false, $activity->attribute_changes->get('old')['is_admin']);
-        $this->assertSame(true, $activity->attribute_changes->get('attributes')['is_admin']);
-    }
-
     public function test_secrets_are_never_written_to_the_log(): void
     {
         $user = $this->user();
@@ -85,5 +72,42 @@ class UserActivityLoggingTest extends TestCase
         $this->assertSame($actor->getKey(), $activity->causer_id);
         $this->assertSame(User::class, $activity->causer_type);
         $this->assertSame($subject->getKey(), $activity->subject_id);
+    }
+
+    /**
+     * Roles are the privilege system now, so granting one is the escalation
+     * event worth auditing. It arrives through a permission package event
+     * rather than through LogsActivity.
+     */
+    public function test_granting_a_role_is_logged(): void
+    {
+        $user = $this->superAdmin();
+
+        $activity = Activity::query()
+            ->where('event', 'role_granted')
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($activity);
+        $this->assertSame('user', $activity->log_name);
+        $this->assertSame(User::class, $activity->subject_type);
+        $this->assertSame($user->getKey(), $activity->subject_id);
+        $this->assertSame(['super_admin'], $activity->properties->get('roles'));
+    }
+
+    public function test_revoking_a_role_is_logged(): void
+    {
+        $user = $this->superAdmin();
+
+        $user->removeRole('super_admin');
+
+        $activity = Activity::query()
+            ->where('event', 'role_revoked')
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($activity);
+        $this->assertSame($user->getKey(), $activity->subject_id);
+        $this->assertSame(['super_admin'], $activity->properties->get('roles'));
     }
 }

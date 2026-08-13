@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\User;
+use BezhanSalleh\FilamentShield\Support\Utils;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
@@ -24,7 +25,8 @@ class AdminUserSeeder extends Seeder
             ],
         );
 
-        // is_admin is not fillable, so it cannot ride along in the array above.
-        $user->grantAdmin();
+        // Holding a role is what grants panel access, so this is the line that
+        // makes the account usable. ShieldSeeder must have run first.
+        $user->syncRoles([Utils::getSuperAdminName()]);
     }
 }
