@@ -21,6 +21,8 @@ php artisan migrate:fresh --seed   # rebuild sqlite + seed admin user
 - **spatie/laravel-activitylog v5** — audit trail in the `activity_log` table, browsable at
   `/admin/activities`.
 - **opcodesio/log-viewer v3** — log file browser at `/log-viewer`, outside the Filament panel.
+- **bezhansalleh/filament-shield v4** on **spatie/laravel-permission v8** — roles and
+  permissions, managed at `/admin/shield/roles`.
 - **Database is SQLite** (`database/database.sqlite`), gitignored via `database/.gitignore`.
   Tests run against `:memory:` (see `phpunit.xml`), so they never touch the dev database.
 - Frontend: Vite 8 + Tailwind 4. Filament ships its own compiled CSS/JS and does not go
@@ -29,38 +31,49 @@ php artisan migrate:fresh --seed   # rebuild sqlite + seed admin user
 
 ## Access control
 
-Two independent gates. Neither is a role system; both are single booleans.
+Roles are the single source of truth. There is no `is_admin` column — it existed briefly and
+was dropped in favour of Shield roles so the two could not disagree.
 
-**Filament panel** — `User::canAccessPanel()` returns `is_admin`. Filament checks it at login
-*and* on every request through `Http/Middleware/Authenticate.php`, so revoking the flag ends a
-live session on the next page load. Non-admins get 403, guests are redirected to login.
+**Filament panel** — `User::canAccessPanel()` returns `$this->roles()->exists()`. Holding any
+role opens the door; Shield policies then decide what is reachable inside. Filament checks this
+at login *and* on every request through `Http/Middleware/Authenticate.php`, so removing a
+user's last role ends a live session on the next page load. Roleless users get 403, guests are
+redirected to login.
 
-**Log viewer** — the `viewLogViewer` gate in `AppServiceProvider` requires `is_admin`, the same
-rule as the panel. Keep the two in step: raw log files expose more than the panel does, so a
-weaker gate here would be a way around the stronger one.
+**Log viewer** — the `viewLogViewer` gate in `AppServiceProvider` uses the same rule. Keep the
+two in step: raw log files expose more than the panel does, so a weaker gate here would be a
+way around the stronger one.
 `LogViewerAccessTest::test_log_viewer_access_matches_panel_access` asserts they agree.
 
 This gate is not optional: `opcodesio/log-viewer` only locks itself down when `APP_ENV` is
 exactly `production` (`AuthorizeLogViewer` middleware checks `App::isProduction()`), so without
 it staging and every other environment serve log contents to anonymous visitors.
 
+**Permissions** — Shield generated 24 permissions named `Action:Subject` (`ViewAny:Activity`).
+`super_admin` holds all of them and short-circuits every check through a `Gate::before` hook
+(`filament-shield.super_admin.intercept_gate`). Regenerate after adding a resource:
+
+```bash
+php artisan shield:generate --all --panel=admin
+php artisan shield:seeder --force     # refresh ShieldSeeder from the current database
+```
+
 ## Gotchas
 
-**`is_admin` is not fillable, on purpose.** It grants the whole admin panel, so it must never
-arrive from request data. Set it with `$user->grantAdmin()` / `$user->revokeAdmin()`, which
-use `forceFill()`. Passing `is_admin` to `create()` or `update()` is silently dropped —
-`PanelAccessTest::test_is_admin_cannot_be_mass_assigned` locks that in. A future Filament
-`UserResource` toggle must call those methods rather than relying on mass assignment.
+**Policies for vendor models are not auto-discovered.** Laravel maps `App\Models\X` to
+`App\Policies\XPolicy`. `Activity` lives in a vendor namespace, so `ActivityPolicy` is
+registered by hand in `AppServiceProvider::registerVendorModelPolicies()`. Without that line
+the policy is silently ignored and every permission check on it passes. Shield prints a
+"requires registration" note when generating such policies — do not skip it. Shield's own
+`RolePolicy` is registered by its service provider and needs nothing.
 
 **Model config uses PHP attributes, not properties.** `app/Models/User.php` declares
 `#[Fillable([...])]` and `#[Hidden([...])]` above the class. Do not add `protected $fillable`
-alongside them — pick the attribute style the file already uses. `protected $attributes` is
-still a plain property and is used there to default `is_admin` to `false`.
+alongside them — pick the attribute style the file already uses.
 
-**A database `->default()` does not reach the model.** `is_admin` is defaulted in *both* the
-migration and `User::$attributes`. Without the model-side default, a freshly created instance
-reads `null` rather than `false`, which breaks the `bool` return type of `canAccessPanel()`
-and makes the audit log record `null -> true` instead of a real `false -> true` transition.
+**`permission.events_enabled` is set to `true` on purpose.** It ships as `false`. Role grants
+and revocations are audited through those events, so turning it off silently removes the
+privilege-escalation trail.
 
 **Never `Hash::make()` a password in seeders or factories.** `User::casts()` sets
 `'password' => 'hashed'`, so Eloquent hashes on assign. Hashing first produces a double hash
@@ -91,16 +104,28 @@ v5 also stores diffs in their own `attribute_changes` column (`['old' => [...], 
 
 ## Seeded credentials
 
-`DatabaseSeeder` calls `AdminUserSeeder`, which creates `admin@admin.com` / `admin` and then
-calls `grantAdmin()`. Deliberately weak and local-only — there is no environment guard on the
-seeder, so do not run `--seed` against a production database.
+`DatabaseSeeder` calls `ShieldSeeder` then `AdminUserSeeder` — that order matters, because the
+admin account is made usable by `syncRoles([super_admin])` and the role has to exist first.
+The account is `admin@admin.com` / `admin`. Deliberately weak and local-only — there is no
+environment guard on the seeder, so do not run `--seed` against a production database.
+
+`ShieldSeeder` is generated, not hand-written: `php artisan shield:seeder --force` snapshots
+the current roles and permissions into it. Regenerate it whenever permissions change, or a
+fresh database will come up missing them.
 
 ## Audit log
 
-`User` uses `LogsActivity` with an explicit allowlist: `logOnly(['name', 'email', 'is_admin'])`,
+`User` uses `LogsActivity` with an explicit allowlist: `logOnly(['name', 'email'])`,
 `logOnlyDirty()`, `dontLogEmptyChanges()`, log name `user`. The allowlist is deliberate — the
 table holds password hashes and remember tokens, and `logAll()` cannot stay safe as columns are
-added. `is_admin` is logged because a change there is a privilege escalation.
+added.
+
+**Role changes are audited separately.** `LogsActivity` watches columns, and roles live in a
+pivot table, so it cannot see them at all. `App\Listeners\LogRoleChange` listens for
+`RoleAttachedEvent` / `RoleDetachedEvent` and writes `role_granted` / `role_revoked` entries
+with the role names in `properties`. Since a role is what grants panel access, this *is* the
+privilege-escalation trail — if it stops working the log looks healthy while missing the most
+important events.
 
 When adding the trait to another model, keep the same shape: name the log, list attributes
 explicitly, and add a test asserting secrets never appear in `attribute_changes`
@@ -134,10 +159,14 @@ eager-loads `causer` and `subject` because both are morphs and cannot be joined.
 
 | File | Locks in |
 |------|----------|
-| `PanelAccessTest` | admin/non-admin/guest access, mass-assignment block, revoke-locks-out |
-| `UserActivityLoggingTest` | what is logged, what is never logged, causer attribution |
+| `PanelAccessTest` | roleless/super-admin/guest access, removing the last role locks out |
+| `UserActivityLoggingTest` | what is logged, what is never logged, causer, role grant/revoke |
 | `ActivityLogPanelTest` | list and view pages render, resource stays read-only |
-| `LogViewerAccessTest` | guests blocked from the log viewer page *and* its API |
+| `LogViewerAccessTest` | guests and roleless users blocked from the page *and* the API |
+
+`Tests\TestCase` provides `userWithRole()`, `superAdmin()` and `seedRoles()`. Roles come from
+`ShieldSeeder` so tests exercise the same data a deploy produces, and the permission cache is
+cleared afterwards — without that, a role created mid-test stays invisible to `Gate` checks.
 
 The log viewer's API is tested separately from its UI because it has its own middleware stack
 (`api_middleware` in `config/log-viewer.php`) and returns raw log contents.
