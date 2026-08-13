@@ -17,7 +17,7 @@ class ShieldSeeder extends Seeder
         $tenants = '[]';
         $users = '[]';
         $userTenantPivot = '[]';
-        $rolesWithPermissions = '[{"name":"super_admin","guard_name":"web","permissions":["Create:Activity","Create:Role","Delete:Activity","Delete:Role","DeleteAny:Activity","DeleteAny:Role","ForceDelete:Activity","ForceDelete:Role","ForceDeleteAny:Activity","ForceDeleteAny:Role","Reorder:Activity","Reorder:Role","Replicate:Activity","Replicate:Role","Restore:Activity","Restore:Role","RestoreAny:Activity","RestoreAny:Role","Update:Activity","Update:Role","View:Activity","View:Role","ViewAny:Activity","ViewAny:Role"]}]';
+        $rolesWithPermissions = '[{"name":"super_admin","guard_name":"web","permissions":["Create:Activity","Create:Role","Delete:Activity","Delete:Role","DeleteAny:Activity","DeleteAny:Role","ForceDelete:Activity","ForceDelete:Role","ForceDeleteAny:Activity","ForceDeleteAny:Role","Reorder:Activity","Reorder:Role","Replicate:Activity","Replicate:Role","Restore:Activity","Restore:Role","RestoreAny:Activity","RestoreAny:Role","Update:Activity","Update:Role","View:Activity","View:Role","ViewAny:Activity","ViewAny:Role","ViewAny:User","View:User","Create:User","Update:User","Delete:User","DeleteAny:User","Restore:User","ForceDelete:User","ForceDeleteAny:User","RestoreAny:User","Replicate:User","Reorder:User"]}]';
         $directPermissions = '[]';
 
         // 1. Seed tenants first (if present)
