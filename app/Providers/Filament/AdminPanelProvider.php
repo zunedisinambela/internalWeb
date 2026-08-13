@@ -2,7 +2,9 @@
 
 namespace App\Providers\Filament;
 
+use App\Http\Middleware\RecordVisit;
 use BezhanSalleh\FilamentShield\FilamentShieldPlugin;
+use Filament\Auth\MultiFactor\App\AppAuthentication;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -28,6 +30,22 @@ class AdminPanelProvider extends PanelProvider
             ->id('admin')
             ->path('admin')
             ->login()
+            // The profile page is where a user turns two-factor on or off for
+            // their own account, so enabling MFA without it leaves the feature
+            // unreachable. isSimple: false keeps the panel chrome around it
+            // rather than rendering it as a bare standalone page.
+            ->profile(isSimple: false)
+            // isRequired stays false: each user decides for themselves. Flip it
+            // to true and everyone without a secret is redirected to set one up
+            // before they can reach any page.
+            ->multiFactorAuthentication(
+                AppAuthentication::make()
+                    // Without recovery codes a lost phone locks the account out
+                    // permanently — and for the last super admin there is no one
+                    // left who can clear it.
+                    ->recoverable(),
+                isRequired: false,
+            )
             ->colors([
                 'primary' => Color::Amber,
             ])
@@ -50,6 +68,12 @@ class AdminPanelProvider extends PanelProvider
                 SubstituteBindings::class,
                 DisableBladeIconComponents::class,
                 DispatchServingFilamentEvent::class,
+                // The panel does not use the `web` middleware group, so the
+                // visit recorder has to be listed here as well or nothing
+                // under /admin is ever tracked. It sits in the base stack
+                // rather than authMiddleware() so anonymous hits on the login
+                // page are recorded too.
+                RecordVisit::class,
             ])
             ->plugins([
                 FilamentShieldPlugin::make(),

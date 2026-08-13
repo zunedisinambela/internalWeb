@@ -60,12 +60,15 @@ return [
     |--------------------------------------------------------------------------
     |
     | Here you may specify the default timezone for your application, which
-    | will be used by the PHP date and date-time functions. The timezone
-    | is set to "UTC" by default as it is suitable for most use cases.
+    | will be used by the PHP date and date-time functions.
+    |
+    | Asia/Jakarta (WIB), not the Laravel default of UTC. Timestamps are
+    | therefore *stored* in local time, not converted on display — so this
+    | value cannot be changed later without rewriting every stored timestamp.
     |
     */
 
-    'timezone' => 'UTC',
+    'timezone' => env('APP_TIMEZONE', 'Asia/Jakarta'),
 
     /*
     |--------------------------------------------------------------------------
@@ -76,13 +79,20 @@ return [
     | by Laravel's translation / localization methods. This option can be
     | set to any locale for which you plan to have translation strings.
     |
+    | Indonesian. Filament and Shield both ship "id" translations, and Laravel's
+    | own lines are translated in lang/id. The fallback stays "en" so a missing
+    | key surfaces as English rather than as the raw key.
+    |
+    | Carbon does not follow this automatically — AppServiceProvider sets its
+    | locale explicitly, or month names and diffForHumans() stay English.
+    |
     */
 
-    'locale' => env('APP_LOCALE', 'en'),
+    'locale' => env('APP_LOCALE', 'id'),
 
     'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
 
-    'faker_locale' => env('APP_FAKER_LOCALE', 'en_US'),
+    'faker_locale' => env('APP_FAKER_LOCALE', 'id_ID'),
 
     /*
     |--------------------------------------------------------------------------

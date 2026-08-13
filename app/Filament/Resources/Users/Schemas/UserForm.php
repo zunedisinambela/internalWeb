@@ -16,7 +16,7 @@ class UserForm
     {
         return $schema
             ->components([
-                Section::make('Account')
+                Section::make('Akun')
                     ->columns(2)
                     ->components([
                         TextInput::make('name')
@@ -32,7 +32,7 @@ class UserForm
                             ->unique(ignoreRecord: true),
                     ]),
 
-                Section::make('Password')
+                Section::make('Kata Sandi')
                     ->columns(2)
                     ->components([
                         // Required when creating, optional when editing: an
@@ -46,11 +46,11 @@ class UserForm
                             ->required(fn (string $operation): bool => $operation === 'create')
                             ->dehydrated(fn (?string $state): bool => filled($state))
                             ->helperText(fn (string $operation): string => $operation === 'edit'
-                                ? 'Leave blank to keep the current password.'
-                                : 'At least 8 characters.'),
+                                ? 'Kosongkan untuk mempertahankan kata sandi saat ini.'
+                                : 'Minimal 8 karakter.'),
 
                         TextInput::make('password_confirmation')
-                            ->label('Confirm password')
+                            ->label('Konfirmasi kata sandi')
                             ->password()
                             ->revealable()
                             ->required(fn (string $operation): bool => $operation === 'create')
@@ -58,8 +58,8 @@ class UserForm
                             ->dehydrated(false),
                     ]),
 
-                Section::make('Roles')
-                    ->description('Holding any role grants access to this panel and to the log viewer.')
+                Section::make('Peran')
+                    ->description('Memiliki peran apa pun memberi akses ke panel ini dan ke log viewer.')
                     ->components([
                         Select::make('roles')
                             ->hiddenLabel()
@@ -71,7 +71,7 @@ class UserForm
                             // out of the page you are standing on.
                             ->required(fn (?User $record): bool => $record?->is(Auth::user()) ?? false)
                             ->helperText(fn (?User $record): ?string => $record?->is(Auth::user())
-                                ? 'You cannot remove your own last role.'
+                                ? 'Anda tidak bisa menghapus peran terakhir milik Anda sendiri.'
                                 : null),
                     ]),
             ]);

@@ -36,11 +36,18 @@ class LogRoleChange
             return;
         }
 
+        // The event key stays English and machine-readable — it is filtered on
+        // and asserted in tests. Only the human-facing description is
+        // translated, so the two must be mapped separately.
         activity('user')
             ->performedOn($model)
             ->withProperties(['roles' => $roles])
             ->event($action === 'granted' ? 'role_granted' : 'role_revoked')
-            ->log(sprintf('Roles %s: %s', $action, implode(', ', $roles)));
+            ->log(sprintf(
+                'Peran %s: %s',
+                $action === 'granted' ? 'diberikan' : 'dicabut',
+                implode(', ', $roles),
+            ));
     }
 
     /**

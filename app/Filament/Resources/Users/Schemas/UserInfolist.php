@@ -13,7 +13,7 @@ class UserInfolist
     {
         return $schema
             ->components([
-                Section::make('Account')
+                Section::make('Akun')
                     ->columns(2)
                     ->components([
                         TextEntry::make('name'),
@@ -22,24 +22,38 @@ class UserInfolist
                             ->copyable(),
 
                         TextEntry::make('email_verified_at')
-                            ->label('Verified')
+                            ->label('Terverifikasi')
                             ->dateTime('d M Y H:i')
-                            ->placeholder('Not verified'),
+                            ->placeholder('Belum terverifikasi'),
 
                         TextEntry::make('created_at')
-                            ->label('Created')
+                            ->label('Dibuat')
                             ->dateTime('d M Y H:i'),
                     ]),
 
-                Section::make('Access')
+                Section::make('Akses')
                     ->components([
                         TextEntry::make('roles.name')
-                            ->label('Roles')
+                            ->label('Peran')
                             ->badge()
-                            ->placeholder('No access')
+                            ->placeholder('Tanpa akses')
                             ->helperText(fn (User $record): string => $record->roles()->exists()
-                                ? 'Can sign in to this panel and the log viewer.'
-                                : 'Cannot sign in to this panel or the log viewer.'),
+                                ? 'Bisa masuk ke panel ini dan ke log viewer.'
+                                : 'Tidak bisa masuk ke panel ini maupun ke log viewer.'),
+
+                        // State is derived, never the stored value: the column
+                        // holds the encrypted TOTP secret, and anyone who can
+                        // read it can generate that account's codes.
+                        TextEntry::make('two_factor')
+                            ->label('Autentikasi dua faktor')
+                            ->state(fn (User $record): string => $record->hasTwoFactorEnabled()
+                                ? 'Aktif'
+                                : 'Belum aktif')
+                            ->badge()
+                            ->color(fn (User $record): string => $record->hasTwoFactorEnabled() ? 'success' : 'gray')
+                            ->helperText(fn (User $record): string => $record->hasTwoFactorEnabled()
+                                ? 'Masuk butuh kata sandi dan kode dari aplikasi authenticator.'
+                                : 'Masuk cukup dengan kata sandi. Hanya pemilik akun yang bisa mengaktifkannya, dari halaman profilnya sendiri.'),
                     ]),
             ]);
     }

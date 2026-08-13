@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\RecordVisit;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -12,7 +13,13 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        // Records page views into visits_monitoring. This only covers the
+        // `web` group; the Filament panel builds its own stack and is wired
+        // separately in AdminPanelProvider. What gets recorded is decided by
+        // App\Monitoring\PageViewsOnly.
+        $middleware->web(append: [
+            RecordVisit::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

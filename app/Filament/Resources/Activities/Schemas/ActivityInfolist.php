@@ -15,11 +15,11 @@ class ActivityInfolist
     {
         return $schema
             ->components([
-                Section::make('Activity')
+                Section::make('Aktivitas')
                     ->columns(3)
                     ->components([
                         TextEntry::make('created_at')
-                            ->label('When')
+                            ->label('Waktu')
                             ->dateTime('d M Y H:i:s')
                             ->helperText(fn (Activity $record): string => $record->created_at?->diffForHumans() ?? ''),
 
@@ -44,19 +44,19 @@ class ActivityInfolist
                             ->columnSpanFull(),
                     ]),
 
-                Section::make('Actor and subject')
+                Section::make('Pelaku dan objek')
                     ->columns(2)
                     ->components([
                         TextEntry::make('causer')
-                            ->label('Causer')
+                            ->label('Pelaku')
                             ->state(fn (Activity $record): string => $record->causer?->name
-                                ?? ($record->causer_type ? class_basename($record->causer_type)." #{$record->causer_id}" : 'System'))
+                                ?? ($record->causer_type ? class_basename($record->causer_type)." #{$record->causer_id}" : 'Sistem'))
                             ->helperText(fn (Activity $record): ?string => $record->causer_type
                                 ? $record->causer_type." #{$record->causer_id}"
                                 : 'Not attributed to a logged-in user'),
 
                         TextEntry::make('subject')
-                            ->label('Subject')
+                            ->label('Objek')
                             ->state(fn (Activity $record): string => $record->subject_type
                                 ? class_basename($record->subject_type)." #{$record->subject_id}"
                                 : '—')
@@ -66,26 +66,26 @@ class ActivityInfolist
                 // attribute_changes is stored as ['old' => [...], 'attributes' => [...]].
                 // The section hides itself when a log entry carries no diff, which is
                 // the case for plain activity()->log() calls.
-                Section::make('Changes')
+                Section::make('Perubahan')
                     ->columns(2)
                     ->visible(fn (Activity $record): bool => filled($record->attribute_changes))
                     ->components([
                         KeyValueEntry::make('attribute_changes.old')
-                            ->label('Before')
+                            ->label('Sebelum')
                             ->keyLabel('Attribute')
                             ->valueLabel('Old value')
                             ->state(fn (Activity $record): array => self::stringifyValues($record->attribute_changes?->get('old') ?? []))
                             ->emptyMessage('No previous values recorded.'),
 
                         KeyValueEntry::make('attribute_changes.attributes')
-                            ->label('After')
+                            ->label('Sesudah')
                             ->keyLabel('Attribute')
                             ->valueLabel('New value')
                             ->state(fn (Activity $record): array => self::stringifyValues($record->attribute_changes?->get('attributes') ?? []))
                             ->emptyMessage('No new values recorded.'),
                     ]),
 
-                Section::make('Properties')
+                Section::make('Properti')
                     ->collapsed()
                     ->visible(fn (Activity $record): bool => filled($record->properties))
                     ->components([

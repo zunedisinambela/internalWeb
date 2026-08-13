@@ -2,6 +2,9 @@
 
 namespace App\Filament\Resources\Activities\Tables;
 
+use Filament\Actions\BulkActionGroup;
+use Filament\Actions\DeleteAction;
+use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\DatePicker;
 use Filament\Tables\Columns\TextColumn;
@@ -19,7 +22,7 @@ class ActivitiesTable
             ->defaultSort('created_at', 'desc')
             ->columns([
                 TextColumn::make('created_at')
-                    ->label('When')
+                    ->label('Waktu')
                     ->dateTime('d M Y H:i:s')
                     ->description(fn (Activity $record): string => $record->created_at?->diffForHumans() ?? '')
                     ->sortable(),
@@ -42,7 +45,7 @@ class ActivitiesTable
                     ->searchable(),
 
                 TextColumn::make('subject')
-                    ->label('Subject')
+                    ->label('Objek')
                     ->state(fn (Activity $record): string => $record->subject_type
                         ? class_basename($record->subject_type)." #{$record->subject_id}"
                         : '—')
@@ -50,9 +53,9 @@ class ActivitiesTable
                     ->color('gray'),
 
                 TextColumn::make('causer')
-                    ->label('Causer')
+                    ->label('Pelaku')
                     ->state(fn (Activity $record): string => $record->causer?->name
-                        ?? ($record->causer_type ? class_basename($record->causer_type)." #{$record->causer_id}" : 'System'))
+                        ?? ($record->causer_type ? class_basename($record->causer_type)." #{$record->causer_id}" : 'Sistem'))
                     ->description(fn (Activity $record): ?string => $record->causer?->email),
 
                 TextColumn::make('log_name')
@@ -83,7 +86,7 @@ class ActivitiesTable
                         ->all()),
 
                 SelectFilter::make('subject_type')
-                    ->label('Subject type')
+                    ->label('Tipe objek')
                     ->options(fn (): array => Activity::query()
                         ->whereNotNull('subject_type')
                         ->distinct()
@@ -94,8 +97,8 @@ class ActivitiesTable
 
                 Filter::make('created_at')
                     ->schema([
-                        DatePicker::make('from')->label('From'),
-                        DatePicker::make('until')->label('Until'),
+                        DatePicker::make('from')->label('Dari'),
+                        DatePicker::make('until')->label('Sampai'),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query
                         ->when($data['from'] ?? null, fn (Builder $q, string $date): Builder => $q->whereDate('created_at', '>=', $date))
@@ -104,11 +107,11 @@ class ActivitiesTable
                         $indicators = [];
 
                         if ($data['from'] ?? null) {
-                            $indicators[] = 'From '.$data['from'];
+                            $indicators[] = 'Dari '.$data['from'];
                         }
 
                         if ($data['until'] ?? null) {
-                            $indicators[] = 'Until '.$data['until'];
+                            $indicators[] = 'Sampai '.$data['until'];
                         }
 
                         return $indicators;
@@ -116,8 +119,19 @@ class ActivitiesTable
             ])
             ->recordActions([
                 ViewAction::make(),
+                DeleteAction::make(),
             ])
-            ->emptyStateHeading('No activity recorded yet')
-            ->emptyStateDescription('Entries appear here once a model using the LogsActivity trait changes, or once activity() is called.');
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    // Pinned, like the other two monitoring tables: with
+                    // fetchSelectedRecords off Filament deletes through one
+                    // query and fires no model events, and the log entry for
+                    // each deletion hangs off the `deleted` event.
+                    DeleteBulkAction::make()
+                        ->fetchSelectedRecords(),
+                ]),
+            ])
+            ->emptyStateHeading('Belum ada aktivitas tercatat')
+            ->emptyStateDescription('Entri muncul di sini begitu model yang memakai trait LogsActivity berubah, atau begitu activity() dipanggil.');
     }
 }

@@ -12,8 +12,12 @@ return [
     'enabled' => env('ACTIVITYLOG_ENABLED', true),
 
     /*
-     * When the clean command is executed, all recording activities older than
-     * the number of days specified here will be deleted.
+     * Not in use. This only applies to the package's activitylog:clean command,
+     * which is not scheduled — a config value cannot be edited from a screen.
+     * Retention is set at /admin/monitoring and applied by
+     * App\Console\Commands\PruneMonitoring, which also records what it removed.
+     * Running activitylog:clean by hand would bypass that and delete on this
+     * number instead.
      */
     'clean_after_days' => 365,
 

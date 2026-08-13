@@ -15,11 +15,21 @@ use Illuminate\Database\Eloquent\Builder;
 use Spatie\Activitylog\Models\Activity;
 
 /**
- * Read-only browser for the spatie/laravel-activitylog table.
+ * Browser for the spatie/laravel-activitylog table.
  *
- * An audit trail is only worth as much as its immutability, so this resource
- * exposes list and view pages exclusively. Create, edit and delete are denied
- * at the resource level, which also removes the matching buttons from the UI.
+ * This table is the backstop for the other two monitoring screens: deleting a
+ * visit or a sign-in writes an entry here, which is what stops those deletions
+ * from being silent. Allowing entries here to be deleted therefore closes a
+ * loop the rest of the design depends on — someone could clear their visits,
+ * then clear the record of having cleared them.
+ *
+ * What keeps that from being untraceable is one tier up: every deletion here is
+ * written to the application log by AppServiceProvider::registerActivityDeletionLogging(),
+ * readable at /log-viewer. Log files are not writable from the panel, so that
+ * is where the chain ends.
+ *
+ * Create and edit stay refused — entries are written by the application, and an
+ * editable audit entry is worse than a deleted one because it still looks true.
  */
 class ActivityResource extends Resource
 {
@@ -27,11 +37,11 @@ class ActivityResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedClipboardDocumentList;
 
-    protected static ?string $navigationLabel = 'Activity Log';
+    protected static ?string $navigationLabel = 'Log Aktivitas';
 
-    protected static ?string $modelLabel = 'activity';
+    protected static ?string $modelLabel = 'aktivitas';
 
-    protected static ?string $pluralModelLabel = 'activities';
+    protected static ?string $pluralModelLabel = 'aktivitas';
 
     protected static ?int $navigationSort = 90;
 
@@ -64,15 +74,10 @@ class ActivityResource extends Resource
         return false;
     }
 
-    public static function canDelete(mixed $record): bool
-    {
-        return false;
-    }
-
-    public static function canDeleteAny(): bool
-    {
-        return false;
-    }
+    // canDelete() and canDeleteAny() are deliberately not overridden, so
+    // Delete:Activity and DeleteAny:Activity are handed out at
+    // /admin/shield/roles. Of the three monitoring screens this is the one
+    // worth granting most narrowly.
 
     public static function getPages(): array
     {

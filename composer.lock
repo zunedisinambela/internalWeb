@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "0049ff1e229ecba297508accda4b06f4",
+    "content-hash": "d67b7abf69499f1bc68fe7bf0e036632",
     "packages": [
         {
             "name": "anourvalar/eloquent-serialize",
@@ -243,6 +243,82 @@
                 }
             ],
             "time": "2026-07-25T03:31:26+00:00"
+        },
+        {
+            "name": "binafy/laravel-user-monitoring",
+            "version": "v1.2.6",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/binafy/laravel-user-monitoring.git",
+                "reference": "0492f0e40481ac1da720eca130971b857a8cdbde"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/binafy/laravel-user-monitoring/zipball/0492f0e40481ac1da720eca130971b857a8cdbde",
+                "reference": "0492f0e40481ac1da720eca130971b857a8cdbde",
+                "shasum": ""
+            },
+            "require": {
+                "laravel/framework": "^9.0|^10.0|^11.0|^12.0|^13.0",
+                "php": "^8.0"
+            },
+            "require-dev": {
+                "orchestra/testbench": "^7.0|^8.0|^9.0|^10.0|^11.0",
+                "pestphp/pest-plugin-laravel": "^1.4.0|^2.0.0|^3.1.0|^4.1"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "Binafy\\LaravelUserMonitoring\\Providers\\LaravelUserMonitoringServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Binafy\\LaravelUserMonitoring\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Milwad Khosravi",
+                    "email": "milwad.dev@gmail.com",
+                    "homepage": "https://github.com/milwad-dev",
+                    "role": "author"
+                },
+                {
+                    "name": "Binafy",
+                    "homepage": "https://github.com/binafy",
+                    "role": "owner"
+                }
+            ],
+            "description": "Monitor your user and all activity on your application",
+            "homepage": "https://github.com/binafy/laravel-user-monitoring",
+            "keywords": [
+                "analysis",
+                "binafy",
+                "framework",
+                "laravel",
+                "laravel middleware",
+                "laravel package",
+                "laravel tracking",
+                "laravel user monitoring",
+                "laravel user monitoring package",
+                "laravel-monitoring",
+                "laravel-tracking",
+                "milwad",
+                "monitoring",
+                "tracking"
+            ],
+            "support": {
+                "issues": "https://github.com/binafy/laravel-user-monitoring/issues",
+                "source": "https://github.com/binafy/laravel-user-monitoring/tree/v1.2.6"
+            },
+            "time": "2026-04-22T18:36:02+00:00"
         },
         {
             "name": "blade-ui-kit/blade-heroicons",
