@@ -1,0 +1,81 @@
+<?php
+
+namespace App\Filament\Resources\Customers;
+
+use App\Filament\Resources\Customers\Pages\CreateCustomer;
+use App\Filament\Resources\Customers\Pages\EditCustomer;
+use App\Filament\Resources\Customers\Pages\ListCustomers;
+use App\Filament\Resources\Customers\Pages\ViewCustomer;
+use App\Filament\Resources\Customers\Schemas\CustomerForm;
+use App\Filament\Resources\Customers\Schemas\CustomerInfolist;
+use App\Filament\Resources\Customers\Tables\CustomersTable;
+use App\Models\Customer;
+use BackedEnum;
+use Filament\Resources\Resource;
+use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
+use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Model;
+use UnitEnum;
+
+class CustomerResource extends Resource
+{
+    protected static ?string $model = Customer::class;
+
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedUserGroup;
+
+    protected static ?string $recordTitleAttribute = 'name';
+
+    protected static string|UnitEnum|null $navigationGroup = 'Oriflame';
+
+    protected static ?string $navigationLabel = 'Pelanggan';
+
+    // Indonesian has no plural inflection, so both labels are the same word.
+    protected static ?string $modelLabel = 'pelanggan';
+
+    protected static ?string $pluralModelLabel = 'pelanggan';
+
+    protected static ?int $navigationSort = 20;
+
+    public static function form(Schema $schema): Schema
+    {
+        return CustomerForm::configure($schema);
+    }
+
+    public static function infolist(Schema $schema): Schema
+    {
+        return CustomerInfolist::configure($schema);
+    }
+
+    public static function table(Table $table): Table
+    {
+        return CustomersTable::configure($table);
+    }
+
+    /**
+     * Refuses to delete a customer who has bought something, turning a
+     * QueryException from the restrictOnDelete foreign key into a button that is
+     * simply not there.
+     *
+     * On the resource rather than on the action, because Filament consults the
+     * resource for the row action *and* for every record inside a bulk delete —
+     * a check on ->visible() alone would leave the bulk path open. The same
+     * shape as RoomResource::canDelete(), and for the same reason: the foreign
+     * key is the real enforcement and covers tinker, but a 500 page is a poor
+     * way to learn a rule.
+     */
+    public static function canDelete(Model $record): bool
+    {
+        return parent::canDelete($record) && ! $record->sales()->exists();
+    }
+
+    public static function getPages(): array
+    {
+        return [
+            'index' => ListCustomers::route('/'),
+            'create' => CreateCustomer::route('/create'),
+            'view' => ViewCustomer::route('/{record}'),
+            'edit' => EditCustomer::route('/{record}/edit'),
+        ];
+    }
+}

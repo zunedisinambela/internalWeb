@@ -210,6 +210,21 @@ return [
         'end_read_at' => 'waktu pembacaan akhir',
         'photos_start' => 'foto meteran awal',
         'photos_end' => 'foto meteran akhir',
+        'phone' => 'nomor telepon',
+        'code' => 'kode produk',
+        'catalog_price' => 'harga katalog',
+        'marketing_price' => 'harga marketing',
+        'customer_id' => 'pelanggan',
+        'product_id' => 'produk',
+        'quantity' => 'jumlah',
+        'items' => 'daftar produk',
+        // The repeater nests its fields under an index, so a rule that fires on
+        // a line reports `items.0.product_id`. Laravel matches the wildcard form
+        // against that; without these entries the message names the raw path.
+        'items.*.product_id' => 'produk',
+        'items.*.quantity' => 'jumlah',
+        'items.*.catalog_price' => 'harga katalog',
+        'items.*.marketing_price' => 'harga marketing',
     ],
 
 ];

@@ -152,7 +152,7 @@ who can reach it can grant `super_admin`, including to themselves. That is fine 
 super admins hold `Create:User`, but a future staff role with user-management permissions
 would be able to self-promote unless the role select is constrained.
 
-**Permissions** — Shield generated 109 permissions named `Action:Subject` (`ViewAny:Activity`).
+**Permissions** — Shield generated 145 permissions named `Action:Subject` (`ViewAny:Activity`).
 `super_admin` holds all of them and short-circuits every check through a `Gate::before` hook
 (`filament-shield.super_admin.intercept_gate`). Regenerate after adding a resource or page:
 
@@ -233,9 +233,9 @@ two-factor does nothing.
 ## Keuangan
 
 The cash book. `/transactions` (`app/Filament/Resources/Transactions/`) records money in
-and money out, each row optionally carrying photographs of its receipts. It and Listrik kost are
-the two features that exist for their own sake; everything else in this panel is there to keep
-them honest.
+and money out, each row optionally carrying photographs of its receipts. It, Listrik kost and
+Oriflame are the three features that exist for their own sake; everything else in this panel is
+there to keep them honest.
 
 | Piece | Where |
 |-------|-------|
@@ -604,6 +604,168 @@ exactly what a disputed bill turns on.
 - **No bill to hand the tenant.** The panel shows the total; there is no per-room PDF or
   spreadsheet. `pdf.buku-kas` and `TransactionsExport` are the shapes to copy, and PDF and
   Spreadsheet below record what silently goes wrong in each.
+
+## Oriflame
+
+Direct selling, recorded from the consultant's side. Every product carries two prices — what
+the catalogue charges and what the consultant pays — and the whole feature exists to keep the
+difference between them readable per sale and per customer. Three screens under one `Oriflame`
+navigation group.
+
+The worked example it was built from: Ayu takes products A, B and C. The catalogue prices them
+at Rp 200.000 together; they cost the consultant Rp 150.000; the margin is Rp 50.000.
+
+| Piece | Where |
+|-------|-------|
+| Sale | `App\Models\Sale`, `/sales` (`app/Filament/Resources/Sales/`) |
+| Line | `App\Models\SaleItem` — no screen of its own, edited through the sale's repeater |
+| Customer | `App\Models\Customer`, `/customers` |
+| Product | `App\Models\Product`, `/products` — the catalogue, and the source of both prices |
+| Amounts | `App\Filament\Forms\Components\RupiahInput` on `App\Rules\WholeRupiah` |
+| Correction | `Resources/Sales/Actions/RefreshPricesAction` — the one way a recorded price moves |
+
+**Both prices are copied onto the line, never joined to.** `sale_items.catalog_price` and
+`sale_items.marketing_price` are snapshots of `products` taken when the line is entered, and
+this is the load-bearing decision of the feature — the same one `meter_readings.rate` makes,
+with a sharper reason. Oriflame issues a new catalogue every month and reprices most of it, so
+a join would make every recorded sale read the current figures: entering September's catalogue
+would rewrite what Ayu bought in August, with no row changed, nothing in `activity_log`, and a
+margin that had been correct becoming a different number. Copying means a new catalogue applies
+to what is sold after it, which is what a new catalogue means.
+`test_a_later_price_change_does_not_reprice_a_recorded_sale` is the assertion that keeps it;
+without it the feature passes every other test while doing exactly the wrong thing.
+`test_editing_a_sale_does_not_recopy_the_current_prices` covers the same failure arriving
+through the form instead of through a join.
+
+The product relation is still used, and only for two things: the product's name on screen, and
+prefilling a *fresh* line. Never for a figure on a saved one.
+
+**The escape hatch is a button, and its shape is the whole point.**
+`Resources/Sales/Actions/RefreshPricesAction` refills every line of one sale from its products'
+current prices. It exists because the snapshot is not negotiable and yet an honest mistake — a
+product entered at the wrong price, a sale recorded before the catalogue was filled in — has to
+be correctable. Four properties keep it a correction rather than the automatic recalculation the
+snapshot forbids:
+
+| Property | Why |
+|----------|-----|
+| asked for, never automatic | a price change on the product screen still cannot reach a recorded sale |
+| shows every line it would move, both figures, before confirming | "nothing changes" and "four lines change" must not be the same click |
+| writes into the open form and **does not save** | Simpan is the user's; the `sale_item` audit entries then come from `LogsActivity` on the ordinary path, exactly as a hand correction would |
+| hidden when every price already matches | the button's absence answers "are my prices current?" without opening a modal that says no |
+
+It operates on `$livewire->data`, not on the rows. Writing rows directly would be fewer lines,
+skip the form's own validation, and silently discard whatever else was already typed on the
+page. It is on the edit screen only and deliberately **not** a bulk action on the list: repricing
+several sales at once is the shape of the thing the snapshot exists to prevent, and a bulk
+version could not show what it was about to change.
+
+The confirmation body is rendered as HTML and interpolates a product name, which is user input —
+so it goes through `e()`. That is the only place in this feature where an unescaped value would
+be markup rather than text, and
+`test_the_confirmation_lists_what_would_change_and_escapes_the_product_name` pins it.
+
+**Prices are not versioned, unlike `ElectricityTariff`.** That looks inconsistent and is not. A
+tariff needs its own history because a bill is recomputed from the rate in force on a date and
+there is one rate for everything; a catalogue reprices hundreds of products at once, so
+versioning would mean a row per product per month to answer a question the snapshot on each
+line already answers. What is genuinely lost is "what did this product cost in July" for a
+product nobody sold in July — and `activity_log` records every price change with its causer,
+which covers the case that comes up.
+
+**Every total is derived, none is stored.** `SaleItem::$catalog_subtotal`,
+`$marketing_subtotal` and `$profit`; `Sale::$catalog_total`, `$marketing_total` and `$profit`;
+`Customer::$total_spent` and `$total_profit`. A stored total would be a further number able to
+contradict the lines it came from, and nothing would say which was right. Two consequences:
+
+- **Sorting has to be spelled out.** There is no column to order by, and `->sortable()` alone on
+  a `->state()` column renders a control that silently reorders by nothing. `Sale::sumOfItems()`
+  builds the correlated `SUM` once and all three columns pass it to `->sortable(query: …)` —
+  the one place the arithmetic is written a second time, so it is written once.
+- **The customer list shows a count, not a margin.** The totals walk a loaded relation, so a
+  margin per row would be a query per customer; a `withSum` would be a second copy of the
+  arithmetic. The view screen calls `loadMissing('sales.items')` instead.
+
+**`RupiahInput` is new, and it is where the grouped-rupiah trio now lives.** `->live(onBlur)` +
+`afterStateUpdated`, `->formatStateUsing()` and `->dehydrateStateUsing()` have to travel
+together: drop the last one and the column receives the string `"1.500.000"`, which SQLite's
+loose typing casts and stores as **1** — no exception, no validation message, and a price that
+reads as a rounding bug months later. Four fields in this feature need it, so it became a class.
+`Transaction::$amount` and `MeterReading::$rate` predate it and still spell the trio out inline;
+converting them is a separate change to tested financial code.
+
+**Laravel's `->lte()` cannot compare two grouped rupiah fields, and fails quietly.** It picks
+its comparison from `is_numeric()`, which answers **true** for `"150.000"` — a valid float
+string meaning 150.0 — and **false** for `"1.500.000"`, which has two dots. So one side of the
+same comparison is read as a number and the other as a *string length*, with no error either
+way. It happens to be right whenever both figures land in the same shape, which is most of the
+time while testing. `RupiahInput::notGreaterThan()` compares through `WholeRupiah::toInteger()`
+instead, which is the only reading that always matches what the column will receive.
+`test_a_marketing_price_above_the_catalogue_price_is_refused` picks its figures so the broken
+reading and the correct one disagree.
+
+A marketing price *above* the catalogue price is refused on both the product form and every
+sale line — in practice it is the two figures entered the wrong way round. Equal prices are
+accepted: selling on at cost earns nothing and is still a real sale. Below that, the accessors
+are **not** clamped, for the reason `MeterReading::$usage_kwh` is not: a negative margin can
+only come from a row written outside the form, and rendering it in red is how that becomes
+visible. `max(0, …)` would render the same broken row as a plausible sale earning nothing.
+
+**Customers and products are retired, not deleted.** `sales.customer_id` and
+`sale_items.product_id` are both `restrictOnDelete`, so `is_active` is the exit on each. The
+rule is enforced twice on purpose, exactly as it is for rooms: `canDelete()` on the resource
+turns the refusal into a missing button rather than a `QueryException`, and the foreign key
+covers tinker and anything else that never asks the resource. Both stay *selectable* on the
+forms while marked `(tidak aktif)` — a filter would leave the edit screen for an old sale with
+an empty select and no explanation.
+
+**`sale_items.sale_id` is the one cascade in this project.** A line belongs to its sale and
+means nothing without it. The cascade runs in the database and fires no model events, which is
+the intended shape rather than a gap: the sale's own `deleted` entry is the record of the act,
+and a log holding six extra entries for its lines would bury it.
+`test_deleting_a_sale_writes_one_audit_entry` pins the count.
+
+**`SaleItem` has no policy and no Shield permissions**, because it has no resource — Shield
+generates per entity, and lines are only ever reached through the sale's repeater. So
+`SalePolicy` is what gates them, and that is correct as long as `SaleItem` never gets a screen
+of its own. `Gate::getPolicyFor(SaleItem::class)` answers `null`, which is the same shape as the
+`Media` gap noted under Gotchas — harmless while nothing authorizes against it directly.
+
+**Auditing is split four ways**, one log name per thing a reader would filter for:
+
+| Change | Recorded by |
+|--------|-------------|
+| `customer_id`, `occurred_at`, `note` on a sale | `LogsActivity`, log name `sale` |
+| a line's product, quantity or either price | `LogsActivity`, log name `sale_item` |
+| a customer's name, phone or status | `LogsActivity`, log name `customer` |
+| a product's code, name, either price or status | `LogsActivity`, log name `product` |
+| lines removed by the cascade | **nothing** — the sale's own entry covers it |
+
+Both price columns are on the `sale_item` and `product` allowlists deliberately: they are the
+values copied from somewhere else, so a line whose figures match no current product is only
+explicable from the log. `phone` is on the `customer` allowlist for a different reason — a
+number changed on the wrong row is how a message about an order reaches the wrong person.
+
+**What this feature does not do yet**, each a decision rather than an omission:
+
+- **Nothing reaches the cash book.** A sale does not create a `Transaction`. Same unanswered
+  questions as the meter readings: what happens to the transaction when the sale is edited or
+  deleted, and whether a sale is money received now or money owed. Two independent records are
+  honest until those are settled.
+- **No discount to the customer.** The margin is `catalog − marketing` and nothing else, which
+  assumes the customer pays the catalogue price. Giving a friend a break would need a third
+  figure per line — what was actually charged — and the margin would then be
+  `charged − marketing`. It is a column and a form field, cheap to add; it was left out because
+  the example this was built from had no such case and inventing one would have put a figure on
+  a record nobody asked for.
+- **No payment status.** Nothing records whether the customer has paid. `note` is where "bayar
+  minggu depan" goes today. A real answer is a column plus a filter plus a total of outstanding
+  money, which is a small feature of its own.
+- **No monthly recap, no export.** The list filters by customer, product and date range, and
+  the totals are on screen; there is no per-month margin report and no spreadsheet.
+  `TransactionsExport` and `App\Reports\CashBook` are the shapes to copy, and Spreadsheet below
+  records what silently goes wrong.
+- **No stock.** Products are a price list, not an inventory. Nothing tracks what is on hand.
 
 ## Monitoring
 
@@ -1121,6 +1283,23 @@ That matters more for meter photographs than for receipts. A receipt is photogra
 it happens to be; a meter is bolted to the building, so its EXIF coordinates are the address of
 a property with tenants in it.
 
+**User-typed text reaches three kinds of surface, and each escapes differently.** A product
+name, a transaction description, a room's occupant and a sale note are all free text somebody
+typed into a form. Verified against the vendor source rather than assumed, because the three do
+not behave alike:
+
+| Surface | What actually happens |
+|---------|-----------------------|
+| a Blade view | `{{ }}` escapes, `{!! !!}` does not. In a **PDF** view the stakes are higher than XSS: dompdf's `chroot` is `base_path()` and `file://` is in `allowed_protocols`, so parsed markup can reach `.env` — and `APP_KEY` decrypts every user's two-factor secret. See PDF. |
+| a Filament description or heading — `->modalDescription()`, `Callout`, `Section`, empty state | all rendered `{{ $description }}`. A plain **`string` is escaped**; an **`Htmlable` is not**, because Laravel's `e()` passes `Htmlable` straight through to `toHtml()`. |
+| `Notification::title()` / `::body()` | neither escaped nor raw — both go through `str(...)->sanitizeHtml()`. Scripts and event attributes are stripped, but **markup is still interpreted**, so a product name containing `<b>` renders bold rather than showing the tag. |
+
+So the trap is narrow and specific: reaching for `HtmlString` to get a list or a line break in a
+description, and carrying a user value in with it. Returning a plain string needs nothing.
+`RefreshPricesAction` is the worked example — it builds a `<ul>` of product names and runs each
+through `e()` — and `test_the_confirmation_lists_what_would_change_and_escapes_the_product_name`
+is what keeps that from being quietly dropped.
+
 **Policies for vendor models are not auto-discovered.** Laravel maps `App\Models\X` to
 `App\Policies\XPolicy`. `Activity` lives in a vendor namespace, so `ActivityPolicy` is
 registered by hand in `AppServiceProvider::registerVendorModelPolicies()`. Without that line
@@ -1132,8 +1311,13 @@ provider registers that one, so nothing needs doing. The note is emitted from th
 the model, not from whether a binding exists, so it cannot tell the two cases apart. Check with
 `Gate::getPolicyFor(Model::class)` rather than trusting the label in either direction — today
 that returns `App\Policies\RolePolicy` for Shield's `Role`, `App\Policies\ActivityPolicy` for
-activitylog's `Activity`, and **`null` for medialibrary's `Media`**, which is the one still
-uncovered.
+activitylog's `Activity`, and **`null` for medialibrary's `Media`**.
+
+`App\Models\SaleItem` answers `null` too, for an unrelated reason: Shield generates per
+*entity*, and a model with no resource gets no permissions and no policy. Lines are only ever
+reached through the sale's repeater, so `SalePolicy` is what gates them — correct exactly as
+long as `SaleItem` never gets a screen of its own. Giving it one means generating its policy in
+the same pass, or every check against it passes silently. See Oriflame.
 
 `App\Models\VisitMonitoring` and `App\Models\AuthenticationMonitoring` exist only to dodge this
 trap: they subclass the package models so discovery reaches them, and Shield generated their
@@ -1150,12 +1334,18 @@ properties; match the file you are editing.
 columns are absent on purpose: they are written by direct assignment, and a fillable secret is
 settable from any request that reaches a user form.
 
-**`booted()` is already taken on `User`, `Transaction`, `MeterReading` and `ElectricityTariff`**
-— by the two-factor audit hook on the first and by the author stamp on the other three. Eloquent
-allows one `booted()` per class, so a second definition silently replaces the first rather than
-erroring. Add listeners inside the existing method. Trait boot methods are exempt:
-`bootInteractsWithMedia()` runs *in addition to* `Transaction::booted()`, which is why the two
-coexist there.
+**`booted()` is already taken on seven models.** Eloquent allows one `booted()` per class, so a
+second definition silently replaces the first rather than erroring — no warning, and the hook
+that vanishes is whichever one was there first. Add listeners inside the existing method.
+
+| Model | What its `booted()` does |
+|-------|--------------------------|
+| `User` | watches the two-factor column for change without recording its value |
+| `Transaction`, `MeterReading`, `ElectricityTariff`, `Sale` | stamp the author from the session |
+| `VisitMonitoring`, `AuthenticationMonitoring` | write the `visit_deleted` / `sign_in_deleted` audit entries |
+
+Trait boot methods are exempt: `bootInteractsWithMedia()` runs *in addition to*
+`Transaction::booted()`, which is why the two coexist there.
 
 **`permission.events_enabled` is set to `true` on purpose.** It ships as `false`. Role grants
 and revocations are audited through those events, so turning it off silently removes the
@@ -1242,13 +1432,31 @@ with the role names in `properties`. Since a role is what grants panel access, t
 privilege-escalation trail — if it stops working the log looks healthy while missing the most
 important events.
 
-**`Transaction` uses the trait too**, log name `transaction`, allowlist
-`['type', 'amount', 'description', 'occurred_at']` — and its receipts are audited by a separate
-listener for the same reason roles are, since neither is a column. See Keuangan.
+**Nine models carry the trait**, each with its own log name and its own explicit allowlist:
+
+| Model | Log name | Feature |
+|-------|----------|---------|
+| `User` | `user` | Access control |
+| `Transaction` | `transaction` | Keuangan |
+| `Room`, `ElectricityTariff`, `MeterReading` | `room`, `tariff`, `meter_reading` | Listrik kost |
+| `Customer`, `Product`, `Sale`, `SaleItem` | `customer`, `product`, `sale`, `sale_item` | Oriflame |
+
+Three of them pair the trait with a separate listener, because the thing worth auditing is not a
+column and `LogsActivity` cannot see it: roles on `User` (a pivot table), receipts on
+`Transaction` and photographs on `MeterReading` (a relation). `Sale` splits for a different
+reason — its lines *are* rows with their own trait, kept under their own log name so "who
+changed this sale's customer or date" stays readable without every line edit in between.
 
 When adding the trait to another model, keep the same shape: name the log, list attributes
-explicitly, and add a test asserting nothing outside the allowlist reaches `attribute_changes`
-(`UserActivityLoggingTest` and `TransactionResourceTest` each have one to copy).
+explicitly, and add a test asserting nothing outside the allowlist reaches `attribute_changes`.
+`UserActivityLoggingTest`, `TransactionResourceTest` and
+`SaleResourceTest::test_nothing_outside_the_allowlist_is_logged` each have one to copy.
+
+**The Kost models are the gap.** `Room`, `ElectricityTariff` and `MeterReading` assert *that*
+their allowlisted columns are logged and never that unlisted ones are not, so widening one of
+those `logOnly()` calls — or adding a column that a future refactor sweeps into it — would not
+fail anything. None of the three holds a secret today, which is why it has gone unnoticed; the
+test to copy is three assertions long.
 
 The UI is `app/Filament/Resources/Activities/`. `canCreate()` and `canEdit()` return `false`,
 so Filament never registers create or edit routes — an editable audit entry is worse than a
@@ -1259,7 +1467,8 @@ joined.
 
 Log names in use: `user` (model changes, role grants, two-factor changes), `transaction`
 (cash book rows and receipt deletions — see Keuangan), `room`, `tariff` and `meter_reading`
-(the electricity feature and its photo deletions — see Listrik kost), and `monitoring`
+(the electricity feature and its photo deletions — see Listrik kost), `sale`, `sale_item`,
+`customer` and `product` (the Oriflame feature — see Oriflame), and `monitoring`
 (deletions, prunes, and the spreadsheet export — a read that leaves the panel is recorded
 here rather than under `transaction`, because it is an operation on the book rather than a
 change to it).
@@ -1323,6 +1532,21 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   A number input cannot show a grouped value, so any field that formats its own state has to
   drop both — and with them go the `numeric` / `integer` / `min` / `max` rules they registered.
   Replace them explicitly or the field ends up with no validation at all.
+- **An action that should change the form rather than the record writes to
+  `$livewire->data`.** `EditRecord::$data` is the public form state array, so an action can put
+  values in front of the user and let the ordinary Simpan commit them — which keeps the model
+  events, the validation and the audit entries on the normal path. Repeater items live under
+  `data.<field>.<uuid>.<name>`, keyed by uuid, so the path cannot be written out in advance;
+  iterate the array instead. Write values in the shape the field *holds* (a `RupiahInput` holds
+  a grouped string, not an integer). `RefreshPricesAction` is the worked example, and
+  `test_refreshing_prices_fills_the_form_without_saving` is what keeps it from quietly becoming
+  a direct write.
+- **A grouped rupiah field is `App\Filament\Forms\Components\RupiahInput`.** It assembles the
+  `->live(onBlur)` / `->formatStateUsing()` / `->dehydrateStateUsing()` trio that has to travel
+  together — losing the last one stores `"1.500.000"` into an INTEGER column, which SQLite
+  casts to **1** with no error. Use `->notGreaterThan()` rather than Laravel's `->lte()` to
+  compare two of them; `lte` decides how to compare from `is_numeric()`, which reads
+  `"150.000"` as a number and `"1.500.000"` as a string length. See Oriflame.
 - **`->stripCharacters()` is validation-only.** `TextInput::mutateStateForValidation()` applies
   it; `mutateDehydratedState()` does not. What is *stored* is the unstripped state, so pair it
   with `->dehydrateStateUsing()` — or the rules see one value and the column receives another.
@@ -1336,6 +1560,11 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   one copy too many. Variants of one action live in the *same* class as several static
   factories over a shared private base — `ExportTransactionsAction::excel()` and `::pdf()`
   differ only in the renderer, and splitting them would duplicate the gate and the audit call.
+  **More than one mount point is sufficient reason, not the only one.** An action carrying real
+  logic — a built-out confirmation, a state diff, a notification — belongs in its own class from
+  the first mount, so the page class stays a list of what is on the page.
+  `RefreshPricesAction` is mounted once and is a class for that reason; a `getHeaderActions()`
+  holding sixty lines of price arithmetic is where a page stops being readable.
 - **A media component repeated per collection belongs in a private factory method** on the schema
   or table class, not typed out twice. `MeterReadingForm`, `MeterReadingsTable` and
   `MeterReadingInfolist` each build both of their photo components from one `photos()` helper.
@@ -1366,8 +1595,9 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   `->sortable(query: fn (Builder $q, string $direction) => $q->orderByRaw("… {$direction}"))`.
   `MeterReadingsTable` does this for both derived columns.
 - **Navigation groups are set per resource**, not in the panel provider: `$navigationGroup`
-  on each `Resource`, with `$navigationSort` ordering within the group. The `Kost` group is the
-  worked example. A resource with no group sits above the grouped ones.
+  on each `Resource`, with `$navigationSort` ordering within the group. `Kost` and `Oriflame`
+  are the worked examples, and both order the screen that is worked in daily first and the ones
+  that are set up then consulted after it. A resource with no group sits above the grouped ones.
 - Before deploying run `php artisan filament:optimize` — caches component discovery and Blade
   icons. Without it every request pays a directory scan. Re-run `filament:optimize-clear` after
   editing the panel provider, or the cached component list masks your change.
@@ -1375,7 +1605,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 ## Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-211 tests at the last count.
+261 tests at the last count.
 
 | File | Locks in |
 |------|----------|
@@ -1392,6 +1622,9 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 | `RoomResourceTest` | policy gating, a room with readings cannot be deleted from the resource *or* the database, deactivation keeps its readings, latest-reading ordering and its `id` tiebreak, occupant changes audited, bulk delete audited per row |
 | `ElectricityTariffTest` | policy gating, the rate in force is the latest that has started, a scheduled rate stays out until its date, an empty table has no rate, two tariffs cannot share a date, author stamped, grouped input round-trips, rate changes audited |
 | `MeterReadingResourceTest` | policy gating, usage and total derived from stored figures, **a later tariff does not change a recorded reading**, the rate field is hidden on both form screens yet still copied onto the row, shown only when there is no tariff, editing does not re-copy the current tariff, the form prefills the rate in force and both ends of the previous reading, a room with no history keeps the default opening moment, a closing figure below the opening one is refused, a closing moment before the opening one is refused while an equal one is accepted, author stamped, both reading moments default to now, the create button waits for a room, a photo belongs to the end it was uploaded against, photos stay private and unsigned reads are refused, photo / cascade / bulk delete auditing |
+| `SaleResourceTest` | policy gating, the three totals derived from the lines, **a later price change does not reprice a recorded sale**, editing does not re-copy current prices, picking a product copies both prices onto the line, grouped input round-trips, a duplicate product line is refused, a marketing price above the catalogue price is refused, author stamped, the date defaults to now, the create button waits for a customer *and* a product, the cascade removes the lines and writes one entry, line price corrections audited, nothing outside either allowlist is logged, the view screen renders its repeatable entry, **the refresh-prices button fills the form without saving** and only commits through Simpan, hides itself when prices already match, and escapes the product name in its confirmation |
+| `ProductResourceTest` | policy gating, the unit margin derived from the two prices, a negative margin reported rather than clamped, grouped input round-trips, a marketing price above the catalogue price is refused while an equal one is accepted, a fractional price is refused, price changes audited, a sold product cannot be deleted from the resource *or* the database, deactivation keeps its lines |
+| `CustomerResourceTest` | policy gating, totals summed across every sale, a customer with no sales totals zero, a customer with sales cannot be deleted from the resource *or* the database, deactivation keeps their sales, phone changes audited, bulk delete audited per row |
 | `PageViewsOnlyTest` (Unit) | which requests count as a visit |
 | `WholeRupiahTest` (Unit) | which amounts are whole rupiah, that untidy grouping is accepted, and that `1500.75` is refused rather than regrouped |
 
