@@ -39,6 +39,9 @@ php artisan storage:link           # NOT part of `composer setup` — see Media
 - **barryvdh/laravel-dompdf v3.1** on `dompdf/dompdf` v3 — HTML-to-PDF, facade
   `Barryvdh\DomPDF\Facade\Pdf`. Pure PHP, no headless browser, no system binary. Nothing
   generates a PDF yet. v3.1.2 is the first release with `illuminate ^13`. See PDF.
+- **maatwebsite/excel v4** on `phpoffice/phpspreadsheet` v5 — spreadsheet import and export,
+  facade `Maatwebsite\Excel\Facades\Excel`. Nothing generates a spreadsheet yet. **v4, not the
+  3.1 line the search results and most tutorials still point at** — see Spreadsheet.
 - **Database is SQLite** (`database/database.sqlite`), gitignored via `database/.gitignore`.
   Tests run against `:memory:` (see `phpunit.xml`), so they never touch the dev database.
 - Frontend: Vite 8 + Tailwind 4. Filament ships its own compiled CSS/JS and does not go
@@ -664,6 +667,74 @@ exports user records or the audit log itself, that export is a read of data the 
 gates and logs, and it should be recorded like any other — see the Audit log section for the
 shape (`activity()` with a `monitoring` log name).
 
+## Spreadsheet
+
+`maatwebsite/excel` v4.0.0, writing and reading through `phpoffice/phpspreadsheet` v5. Nothing
+generates a spreadsheet yet, and no route serves one.
+
+```php
+use Maatwebsite\Excel\Facades\Excel;
+
+Excel::download(new LaporanExport, 'laporan.xlsx');   // or ->store('local', ...), ->raw(...)
+```
+
+**v4 was chosen over 3.1, and the version matters more than usual here.** Both lines were
+released on the same day, both accept `illuminate ^13`, and the documentation site serves
+`/3.1/` and `/4.x/` side by side — so a search result or a tutorial will almost always land on
+3.1. The difference is underneath:
+
+| | 3.1.70 | 4.0.0 |
+|---|--------|-------|
+| `php` | `^7.0 \|\| ^8.0` | `^8.3` — the project's own pin |
+| `phpoffice/phpspreadsheet` | `^1.30.5` | `^5.8` |
+
+`phpspreadsheet` 1.30.x declares `php >=7.4.0 <8.5.0`. Dev already runs 8.4, so 3.1 would have
+installed against the top of its supported range and stopped resolving at 8.5 — a floor that
+rises on its own. That line also took two CVE patches in four months (`CVE-2026-40296`,
+`CVE-2026-34084`), and moving off it later means auditing every place the code touches a
+PhpSpreadsheet object rather than Laravel-Excel's own API.
+
+**Copying a 3.1 snippet mostly works, and fails on the signatures.** v4 added native types
+across the public interfaces, so a concern written from the older docs raises a fatal:
+
+```php
+public function array()          // 3.1 — docblock only
+public function array(): array   // 4.0 — enforced
+```
+
+`Exportable::queue()` returns `PendingDispatch|PendingBatch`, and `FromQuery` no longer accepts
+a Scout builder — that moved to the new `FromScout`. `config/excel.php` has **no key changes**
+between the two, so the published config is not a way to tell which version the surrounding
+code was written for.
+
+**`config/excel.php` is published and carries no deviations yet.** Two defaults are worth
+knowing before the first export ships:
+
+- **The CSV defaults are American**: `delimiter => ','`, `use_bom => false`. Opened on an
+  Indonesian Windows, whose list separator is `;`, such a file lands entirely in column A.
+  `'excel_compatibility' => true` is the switch — `Writer\Csv` then forces a UTF-8 BOM, a
+  leading `sep=;` line, `;` as the delimiter and CRLF endings, overriding the three keys above.
+  It is off by default. Nothing here needs it until something actually exports CSV, and `xlsx`
+  sidesteps the question completely by not being a text format.
+- **`temporary_files.local_path` is `storage/framework/cache/laravel-excel`**, created at run
+  time and covered by that directory's existing `.gitignore`. Exports larger than
+  `chunk_size` (1000) stage there before being written.
+
+**A queued export needs a queue worker**, the same trap medialibrary conversions have under
+Media: `QUEUE_CONNECTION=database`, so an export implementing `ShouldQueue` returns a response
+immediately, writes nothing, logs nothing, and leaves jobs sitting in the table. `php artisan
+dev` runs `queue:listen`, so it only bites a deploy.
+
+**`FromQuery` needs a deterministic `ORDER BY`.** It paginates the query to chunk it, so a sort
+that ties — `occurred_at` on rows entered in the same minute, say — silently repeats and drops
+records across page boundaries. Order by something unique, or add `id` as a tiebreak.
+
+**Exports are not audited, and they are a read surface.** Same reasoning as the PDF section,
+and more pressing: a spreadsheet of `users` or of `activity_log` is a bulk read of data every
+screen in the panel gates by policy. The first export route should arrive with an authorization
+test and, if it exports records rather than aggregates, an `activity()` entry under the
+`monitoring` log name.
+
 ## Gotchas
 
 **Uploads keep their EXIF.** Medialibrary stores the original file untouched, so GPS
@@ -892,13 +963,16 @@ faked disk always answers 404 for a link that would work in production. The spli
 `ServeFile` checks the signature *before* it looks for the file; the accepting case writes a
 throwaway file to the real `local` disk and cleans it up in a `finally`.
 
-**PDF has no coverage**, because nothing generates one yet. It adds a read surface that does not
-pass through a Shield policy, so the first route that returns a PDF should arrive with its own
-authorization test — a PDF of records the caller cannot view in the panel is a way around the
-policy that guards the screen.
+**PDF and spreadsheet export have no coverage**, because nothing generates either yet. Both add
+a read surface that does not pass through a Shield policy, so the first route that returns one
+should arrive with its own authorization test — a file of records the caller cannot view in the
+panel is a way around the policy that guards the screen.
 
 A PDF test should assert on the response bytes starting `%PDF-`, not on the rendered text;
-dompdf compresses object streams, so the source strings are not greppable in the output.
+dompdf compresses object streams, so the source strings are not greppable in the output. An
+`xlsx` is a zip, so it has the same problem and the same answer — assert on the `PK` magic
+bytes, or use `Excel::fake()` with `assertDownloaded()` and read the rows back rather than
+parsing the file.
 
 `Tests\TestCase` provides `userWithRole()`, `superAdmin()` and `seedRoles()`. Roles come from
 `ShieldSeeder` so tests exercise the same data a deploy produces, and the permission cache is
