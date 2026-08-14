@@ -77,7 +77,7 @@ class TransactionExportTest extends TestCase
         // button is not authorization on its own.
         $this->assertFalse(TransactionResource::canExport());
 
-        $this->get('/admin/transactions')->assertForbidden();
+        $this->get('/transactions')->assertForbidden();
     }
 
     public function test_someone_who_can_list_transactions_may_export_them(): void

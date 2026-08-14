@@ -76,7 +76,7 @@ class ActivityResource extends Resource
 
     // canDelete() and canDeleteAny() are deliberately not overridden, so
     // Delete:Activity and DeleteAny:Activity are handed out at
-    // /admin/shield/roles. Of the three monitoring screens this is the one
+    // /shield/roles. Of the three monitoring screens this is the one
     // worth granting most narrowly.
 
     public static function getPages(): array

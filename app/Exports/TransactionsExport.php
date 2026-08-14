@@ -24,7 +24,7 @@ use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
 /**
  * The cash book as a two-column ledger: money in, money out, running balance.
  *
- * The screen at /admin/transactions puts a single signed amount in one column,
+ * The screen at /transactions puts a single signed amount in one column,
  * because a `+` or `−` in front of the figure is the fastest way to read a
  * direction off a list. A spreadsheet cannot do that and stay useful: the sign
  * would have to be part of a string, and a string cannot be summed. So the

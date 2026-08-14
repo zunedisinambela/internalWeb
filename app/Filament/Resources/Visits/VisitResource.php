@@ -69,7 +69,7 @@ class VisitResource extends Resource
 
     // canDelete() and canDeleteAny() are deliberately not overridden: the
     // resource defers to VisitMonitoringPolicy, so Delete:VisitMonitoring and
-    // DeleteAny:VisitMonitoring are handed out at /admin/shield/roles like
+    // DeleteAny:VisitMonitoring are handed out at /shield/roles like
     // every other permission.
 
     public static function getPages(): array

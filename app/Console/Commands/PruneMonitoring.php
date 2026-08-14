@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Log;
 use Spatie\Activitylog\Models\Activity;
 
 /**
- * Deletes monitoring rows older than the retention set at /admin/monitoring.
+ * Deletes monitoring rows older than the retention set at /monitoring.
  *
  * Replaces the package's laravel-user-monitoring:remove-visit-monitoring-records,
  * which reads its cutoff from config and therefore cannot be driven by a screen.

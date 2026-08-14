@@ -16,12 +16,15 @@ class ExampleTest extends TestCase
     use RefreshDatabase;
 
     /**
-     * A basic test example.
+     * The panel owns the root path, so `/` is the dashboard and a guest is
+     * redirected to sign in. The login screen is the only page this app now
+     * serves to an anonymous visitor, and it is what "the application boots
+     * and renders" is asserted against.
      */
     public function test_the_application_returns_a_successful_response(): void
     {
-        $response = $this->get('/');
+        $this->get('/')->assertRedirect('/login');
 
-        $response->assertStatus(200);
+        $this->get('/login')->assertStatus(200);
     }
 }

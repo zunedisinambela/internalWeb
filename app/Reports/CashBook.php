@@ -20,7 +20,7 @@ use Illuminate\Support\Collection;
  * ## Ordering is imposed, never inherited
  *
  * `saldo` is a running total, so it only means anything read oldest-first. The
- * table at /admin/transactions defaults to `occurred_at desc`, which is how a
+ * table at /transactions defaults to `occurred_at desc`, which is how a
  * cash book is *read* and the reverse of how it is *accumulated* — so callers
  * pass their filtered query and this reorders it.
  *

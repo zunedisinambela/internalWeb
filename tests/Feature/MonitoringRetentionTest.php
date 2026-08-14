@@ -18,20 +18,20 @@ class MonitoringRetentionTest extends TestCase
 
     public function test_guests_are_redirected_from_the_settings_page(): void
     {
-        $this->get('/admin/monitoring')->assertRedirect('/admin/login');
+        $this->get('/monitoring')->assertRedirect('/login');
     }
 
     public function test_users_without_a_role_are_forbidden(): void
     {
         $this->actingAs($this->userWithRole(null))
-            ->get('/admin/monitoring')
+            ->get('/monitoring')
             ->assertForbidden();
     }
 
     public function test_super_admins_can_open_the_settings_page(): void
     {
         $this->actingAs($this->superAdmin())
-            ->get('/admin/monitoring')
+            ->get('/monitoring')
             ->assertOk();
     }
 
@@ -214,7 +214,7 @@ class MonitoringRetentionTest extends TestCase
             'platform' => 'Linux',
             'device' => 'Linux',
             'ip' => '127.0.0.1',
-            'page' => 'http://localhost/admin',
+            'page' => 'http://localhost/',
             'created_at' => now()->subDays($daysAgo),
             'updated_at' => now()->subDays($daysAgo),
         ]);
@@ -228,7 +228,7 @@ class MonitoringRetentionTest extends TestCase
             'platform' => 'Linux',
             'device' => 'Linux',
             'ip' => '127.0.0.1',
-            'page' => 'http://localhost/admin/login',
+            'page' => 'http://localhost/login',
             'created_at' => now()->subDays($daysAgo),
             'updated_at' => now()->subDays($daysAgo),
         ]);

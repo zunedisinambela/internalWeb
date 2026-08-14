@@ -91,7 +91,7 @@ class UserResource extends Resource
      * Self is excluded deliberately, and not just for tidiness: this button
      * skips the code check that the profile page enforces. Someone signed in at
      * a borrowed desk could use it to strip two-factor off the account they are
-     * sitting in front of. The owner turns theirs off from /admin/profile,
+     * sitting in front of. The owner turns theirs off from /profile,
      * where a valid code is required — and if they have lost their device they
      * cannot reach this page at all, so a self button would never be usable.
      */

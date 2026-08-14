@@ -174,7 +174,7 @@ class TwoFactorAuthenticationTest extends TestCase
 
         // The button skips the code check the profile page enforces, so on your
         // own account it would be a way to strip two factor off a session left
-        // unattended. Owners turn theirs off at /admin/profile instead.
+        // unattended. Owners turn theirs off at /profile instead.
         $this->assertFalse(UserResource::canResetTwoFactor($admin));
 
         Livewire::test(ListUsers::class)
@@ -224,11 +224,11 @@ class TwoFactorAuthenticationTest extends TestCase
         // same gate as the rest of the panel, so losing your last role takes it
         // with everything else.
         $this->actingAs($this->userWithRole(null))
-            ->get('/admin/profile')
+            ->get('/profile')
             ->assertForbidden();
 
         $this->actingAs($this->superAdmin())
-            ->get('/admin/profile')
+            ->get('/profile')
             ->assertOk();
     }
 

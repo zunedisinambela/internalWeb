@@ -28,7 +28,11 @@ class AdminPanelProvider extends PanelProvider
         return $panel
             ->default()
             ->id('admin')
-            ->path('admin')
+            // The panel is the whole app, so it owns the root path rather than
+            // sitting under a segment. `id` stays 'admin' — it names the panel
+            // and its route names (filament.admin.*), not the URL. Nothing may
+            // claim `/` in routes/web.php while this is empty.
+            ->path('')
             ->login()
             // The profile page is where a user turns two-factor on or off for
             // their own account, so enabling MFA without it leaves the feature
@@ -70,7 +74,7 @@ class AdminPanelProvider extends PanelProvider
                 DispatchServingFilamentEvent::class,
                 // The panel does not use the `web` middleware group, so the
                 // visit recorder has to be listed here as well or nothing
-                // under /admin is ever tracked. It sits in the base stack
+                // inside the panel is ever tracked. It sits in the base stack
                 // rather than authMiddleware() so anonymous hits on the login
                 // page are recorded too.
                 RecordVisit::class,

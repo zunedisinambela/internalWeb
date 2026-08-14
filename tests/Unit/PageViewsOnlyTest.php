@@ -23,7 +23,7 @@ class PageViewsOnlyTest extends TestCase
 
     public function test_a_plain_get_is_a_page_view(): void
     {
-        $this->assertTrue($this->condition->shouldMonitor(Request::create('/admin', 'GET')));
+        $this->assertTrue($this->condition->shouldMonitor(Request::create('/', 'GET')));
     }
 
     /**
@@ -35,7 +35,7 @@ class PageViewsOnlyTest extends TestCase
     {
         foreach (['POST', 'PUT', 'PATCH', 'DELETE'] as $method) {
             $this->assertFalse(
-                $this->condition->shouldMonitor(Request::create('/admin', $method)),
+                $this->condition->shouldMonitor(Request::create('/', $method)),
                 $method.' should not be recorded as a visit.',
             );
         }
@@ -48,7 +48,7 @@ class PageViewsOnlyTest extends TestCase
      */
     public function test_livewire_requests_are_rejected_by_header(): void
     {
-        $request = Request::create('/admin', 'GET');
+        $request = Request::create('/', 'GET');
         $request->headers->set('X-Livewire', 'true');
 
         $this->assertFalse($this->condition->shouldMonitor($request));
@@ -65,7 +65,7 @@ class PageViewsOnlyTest extends TestCase
     public function test_prefetches_are_rejected(): void
     {
         foreach (['Sec-Purpose', 'Purpose'] as $header) {
-            $request = Request::create('/admin', 'GET');
+            $request = Request::create('/', 'GET');
             $request->headers->set($header, 'prefetch');
 
             $this->assertFalse(

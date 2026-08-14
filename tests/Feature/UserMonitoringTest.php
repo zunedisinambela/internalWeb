@@ -43,24 +43,24 @@ class UserMonitoringTest extends TestCase
 
     public function test_guests_are_redirected_from_the_monitoring_pages(): void
     {
-        $this->get('/admin/visits')->assertRedirect('/admin/login');
-        $this->get('/admin/authentications')->assertRedirect('/admin/login');
+        $this->get('/visits')->assertRedirect('/login');
+        $this->get('/authentications')->assertRedirect('/login');
     }
 
     public function test_users_without_a_role_are_forbidden(): void
     {
         $user = $this->userWithRole(null);
 
-        $this->actingAs($user)->get('/admin/visits')->assertForbidden();
-        $this->actingAs($user)->get('/admin/authentications')->assertForbidden();
+        $this->actingAs($user)->get('/visits')->assertForbidden();
+        $this->actingAs($user)->get('/authentications')->assertForbidden();
     }
 
     public function test_super_admins_can_open_the_monitoring_pages(): void
     {
         $admin = $this->superAdmin();
 
-        $this->actingAs($admin)->get('/admin/visits')->assertOk();
-        $this->actingAs($admin)->get('/admin/authentications')->assertOk();
+        $this->actingAs($admin)->get('/visits')->assertOk();
+        $this->actingAs($admin)->get('/authentications')->assertOk();
     }
 
     /**
@@ -166,7 +166,7 @@ class UserMonitoringTest extends TestCase
     {
         $admin = $this->superAdmin();
 
-        $this->get('/')->assertOk();
+        $this->get('/login')->assertOk();
         $visit = VisitMonitoring::query()->latest('id')->firstOrFail();
 
         $this->actingAs($admin);
@@ -221,7 +221,11 @@ class UserMonitoringTest extends TestCase
 
     public function test_a_page_view_is_recorded(): void
     {
-        $this->get('/')->assertOk();
+        // The login screen, because a guest cannot reach any other page: the
+        // panel sits at the root path and everything behind it needs a role.
+        // RecordVisit is in the panel's base stack rather than its auth
+        // middleware exactly so anonymous hits like this one are recorded.
+        $this->get('/login')->assertOk();
 
         $visit = VisitMonitoring::query()->latest('id')->first();
 
@@ -234,7 +238,7 @@ class UserMonitoringTest extends TestCase
     {
         $admin = $this->superAdmin();
 
-        $this->actingAs($admin)->get('/admin')->assertOk();
+        $this->actingAs($admin)->get('/')->assertOk();
 
         $visit = VisitMonitoring::query()->latest('id')->first();
 
@@ -243,19 +247,36 @@ class UserMonitoringTest extends TestCase
     }
 
     /**
+     * RecordVisit is registered twice — in the `web` group in bootstrap/app.php
+     * and in the panel's own stack — and every other test here now exercises
+     * the panel half, because the panel owns the root path and nothing else it
+     * serves is reachable. /log-viewer is the one page left in the `web` group,
+     * so this is what would catch that registration going missing.
+     */
+    public function test_a_page_view_outside_the_panel_is_recorded(): void
+    {
+        $this->actingAs($this->superAdmin())->get('/log-viewer')->assertOk();
+
+        $visit = VisitMonitoring::query()->latest('id')->first();
+
+        $this->assertNotNull($visit, 'The `web` group has to list RecordVisit as well; the panel stack does not cover /log-viewer.');
+        $this->assertStringContainsString('/log-viewer', (string) $visit->page);
+    }
+
+    /**
      * Filament is Livewire-driven: every table sort and search keystroke is its
      * own request. Recording them would turn this table into a keystroke log.
      */
     public function test_livewire_requests_are_not_recorded(): void
     {
-        $this->withHeader('X-Livewire', 'true')->get('/')->assertOk();
+        $this->withHeader('X-Livewire', 'true')->get('/login')->assertOk();
 
         $this->assertSame(0, VisitMonitoring::query()->count());
     }
 
     public function test_prefetched_pages_are_not_recorded(): void
     {
-        $this->withHeader('Sec-Purpose', 'prefetch')->get('/')->assertOk();
+        $this->withHeader('Sec-Purpose', 'prefetch')->get('/login')->assertOk();
 
         $this->assertSame(0, VisitMonitoring::query()->count());
     }
@@ -279,7 +300,7 @@ class UserMonitoringTest extends TestCase
     /**
      * The package ships delete_user_record_when_user_delete => true, which makes
      * user_id cascade and erases an account's sign-in history the moment it is
-     * deleted at /admin/users — exactly the history you would want after
+     * deleted at /users — exactly the history you would want after
      * removing a suspicious account. config sets it to false for nullOnDelete().
      */
     public function test_sign_in_history_survives_deleting_the_user(): void
@@ -305,6 +326,6 @@ class UserMonitoringTest extends TestCase
     {
         Schema::drop('visits_monitoring');
 
-        $this->get('/')->assertOk();
+        $this->get('/login')->assertOk();
     }
 }

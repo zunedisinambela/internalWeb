@@ -16,27 +16,27 @@ class PanelAccessTest extends TestCase
 
         $this->assertFalse($user->canAccessPanel(Filament::getPanel('admin')));
 
-        $this->actingAs($user)->get('/admin')->assertForbidden();
+        $this->actingAs($user)->get('/')->assertForbidden();
     }
 
     public function test_super_admins_can_open_the_dashboard(): void
     {
         $this->actingAs($this->superAdmin())
-            ->get('/admin')
+            ->get('/')
             ->assertOk();
     }
 
     public function test_super_admins_can_open_the_activity_log(): void
     {
         $this->actingAs($this->superAdmin())
-            ->get('/admin/activities')
+            ->get('/activities')
             ->assertOk();
     }
 
     public function test_users_without_a_role_are_forbidden_from_the_activity_log(): void
     {
         $this->actingAs($this->userWithRole(null))
-            ->get('/admin/activities')
+            ->get('/activities')
             ->assertForbidden();
     }
 
@@ -44,15 +44,15 @@ class PanelAccessTest extends TestCase
     {
         $user = $this->superAdmin();
 
-        $this->actingAs($user)->get('/admin')->assertOk();
+        $this->actingAs($user)->get('/')->assertOk();
 
         $user->syncRoles([]);
 
-        $this->actingAs($user->fresh())->get('/admin')->assertForbidden();
+        $this->actingAs($user->fresh())->get('/')->assertForbidden();
     }
 
     public function test_guests_are_redirected_to_login(): void
     {
-        $this->get('/admin')->assertRedirect(Filament::getLoginUrl());
+        $this->get('/')->assertRedirect(Filament::getLoginUrl());
     }
 }

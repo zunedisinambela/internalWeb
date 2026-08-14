@@ -69,7 +69,7 @@ class AuthenticationResource extends Resource
 
     // canDelete() and canDeleteAny() are deliberately not overridden, so
     // Delete:AuthenticationMonitoring and DeleteAny:AuthenticationMonitoring
-    // are handed out at /admin/shield/roles like every other permission.
+    // are handed out at /shield/roles like every other permission.
     // Worth keeping narrower than the visits equivalent: this is the record of
     // who had access and when.
 

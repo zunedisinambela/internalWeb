@@ -24,13 +24,13 @@ class TransactionResourceTest extends TestCase
 
     public function test_guests_are_redirected_to_login(): void
     {
-        $this->get('/admin/transactions')->assertRedirect('/admin/login');
+        $this->get('/transactions')->assertRedirect('/login');
     }
 
     public function test_users_without_a_role_are_forbidden(): void
     {
         $this->actingAs($this->userWithRole(null))
-            ->get('/admin/transactions')
+            ->get('/transactions')
             ->assertForbidden();
     }
 
@@ -39,7 +39,7 @@ class TransactionResourceTest extends TestCase
         Transaction::factory()->income(2_500_000)->create(['description' => 'Pembayaran klien']);
 
         $this->actingAs($this->superAdmin())
-            ->get('/admin/transactions')
+            ->get('/transactions')
             ->assertOk()
             ->assertSee('Pembayaran klien');
     }
@@ -60,8 +60,8 @@ class TransactionResourceTest extends TestCase
         $user = $this->userWithRole(null, ['email' => 'pembaca@admin.com']);
         $user->assignRole($role);
 
-        $this->actingAs($user)->get('/admin/transactions')->assertOk();
-        $this->actingAs($user)->get('/admin/transactions/create')->assertForbidden();
+        $this->actingAs($user)->get('/transactions')->assertOk();
+        $this->actingAs($user)->get('/transactions/create')->assertForbidden();
     }
 
     /**
@@ -358,14 +358,14 @@ class TransactionResourceTest extends TestCase
 
         $admin = $this->superAdmin();
 
-        $this->actingAs($admin)->get('/admin/transactions')->assertOk();
-        $this->actingAs($admin)->get('/admin/transactions/create')->assertOk();
+        $this->actingAs($admin)->get('/transactions')->assertOk();
+        $this->actingAs($admin)->get('/transactions/create')->assertOk();
         $this->actingAs($admin)
-            ->get('/admin/transactions/'.$transaction->getKey())
+            ->get('/transactions/'.$transaction->getKey())
             ->assertOk()
             ->assertSee('Beli kertas');
         $this->actingAs($admin)
-            ->get('/admin/transactions/'.$transaction->getKey().'/edit')
+            ->get('/transactions/'.$transaction->getKey().'/edit')
             ->assertOk();
     }
 

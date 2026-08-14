@@ -19,14 +19,14 @@ class UserResourceTest extends TestCase
     public function test_super_admins_can_open_the_user_list(): void
     {
         $this->actingAs($this->superAdmin())
-            ->get('/admin/users')
+            ->get('/users')
             ->assertOk();
     }
 
     public function test_users_without_a_role_are_forbidden(): void
     {
         $this->actingAs($this->userWithRole(null))
-            ->get('/admin/users')
+            ->get('/users')
             ->assertForbidden();
     }
 

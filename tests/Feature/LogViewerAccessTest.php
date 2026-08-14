@@ -56,7 +56,7 @@ class LogViewerAccessTest extends TestCase
 
             $this->assertSame(
                 $hasRole,
-                $this->actingAs($user)->get('/admin')->isOk(),
+                $this->actingAs($user)->get('/')->isOk(),
             );
 
             $user->delete();
