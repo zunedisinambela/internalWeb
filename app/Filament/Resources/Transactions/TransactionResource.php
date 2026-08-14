@@ -63,6 +63,27 @@ class TransactionResource extends Resource
     }
 
     /**
+     * Who may download the cash book as a spreadsheet.
+     *
+     * Deliberately the same permission that opens the list, and not a new one.
+     * The export carries no column the table does not already show to the same
+     * caller — including "Dicatat oleh", which is toggleable rather than
+     * privileged — so a separate gate would restrict the format, not the data,
+     * and anyone refused could still read every figure off the screen.
+     *
+     * What it *does* change is that the data leaves the panel, which is why it
+     * is audited (see ExportTransactionsAction) rather than gated harder. If
+     * this organisation ever decides that taking the book out of the building
+     * is its own privilege, the answer is a Shield permission generated for the
+     * resource, and it goes here — on the resource, where the record-level
+     * checks live, not on the button.
+     */
+    public static function canExport(): bool
+    {
+        return static::canViewAny();
+    }
+
+    /**
      * Shown next to the navigation entry. Counting rows on every request would
      * be a query per page load for a number nobody acts on, so this is the
      * balance instead — the one figure worth seeing without opening the screen.

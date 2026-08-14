@@ -37,10 +37,10 @@ php artisan storage:link           # NOT part of `composer setup` — see Media
   image entry that put medialibrary into the panel. A separate package from Filament, and it
   pins medialibrary to `^11.0`. See Media.
 - **barryvdh/laravel-dompdf v3.1** on `dompdf/dompdf` v3 — HTML-to-PDF, facade
-  `Barryvdh\DomPDF\Facade\Pdf`. Pure PHP, no headless browser, no system binary. Nothing
-  generates a PDF yet. v3.1.2 is the first release with `illuminate ^13`. See PDF.
+  `Barryvdh\DomPDF\Facade\Pdf`. Pure PHP, no headless browser, no system binary. One report,
+  on the cash book. v3.1.2 is the first release with `illuminate ^13`. See PDF.
 - **maatwebsite/excel v4** on `phpoffice/phpspreadsheet` v5 — spreadsheet import and export,
-  facade `Maatwebsite\Excel\Facades\Excel`. Nothing generates a spreadsheet yet. **v4, not the
+  facade `Maatwebsite\Excel\Facades\Excel`. One export, on the cash book. **v4, not the
   3.1 line the search results and most tutorials still point at** — see Spreadsheet.
 - **Database is SQLite** (`database/database.sqlite`), gitignored via `database/.gitignore`.
   Tests run against `:memory:` (see `phpunit.xml`), so they never touch the dev database.
@@ -85,7 +85,8 @@ rendering as the raw key. That also means a forgotten translation is easy to mis
 **What stays English on purpose:**
 
 - Activity log `event` keys (`role_granted`, `visit_deleted`, `records_pruned`,
-  `two_factor_reset`, `receipt_deleted`), enum values stored in columns (`income`, `expense` —
+  `two_factor_reset`, `receipt_deleted`, `transactions_exported`), enum values stored in
+  columns (`income`, `expense` —
   see Keuangan), role names (`super_admin`) and permission names (`Delete:Activity`).
   These are filtered on and asserted in tests. Only the human-readable description is
   translated — `LogRoleChange` and `User::booted()` both map the two separately for exactly
@@ -219,6 +220,8 @@ money in and money out, each row optionally carrying photographs of its receipts
 | Amounts | `App\Rules\WholeRupiah` — the only validation on the figure, and the grouped display |
 | Totals | `Resources/Transactions/Widgets/TransactionOverview` |
 | Receipts | media collection `Transaction::RECEIPTS`, private `local` disk |
+| Ledger | `App\Reports\CashBook` — ordering, running balance and totals, shared by both exports |
+| Export | `Resources/Transactions/Actions/ExportTransactionsAction` — `excel()` and `pdf()` |
 
 **Amounts are whole rupiah in an `unsignedBigInteger`, never a decimal.** SQLite has no real
 `DECIMAL` type: `decimal(15,2)` becomes NUMERIC affinity and comes back through PDO as a float,
@@ -316,6 +319,7 @@ is only ever reached by a deliberate signed request.
 |--------|-------------|
 | `type`, `amount`, `description`, `occurred_at` | `LogsActivity`, log name `transaction` |
 | a receipt removed | `AppServiceProvider::registerReceiptDeletionLogging()`, event `receipt_deleted` |
+| the book downloaded, as Excel or PDF | `ExportTransactionsAction`, log name `monitoring`, event `transactions_exported`, `format` property |
 | a receipt attached or replaced | **nothing** |
 
 Deleting a whole transaction writes its own `deleted` entry *and* one `receipt_deleted` per
@@ -325,6 +329,46 @@ It depends on two unrelated mechanisms lining up — medialibrary removing its f
 `deleting` event, and the `Media::deleted` listener firing once per row — so
 `test_deleting_a_transaction_audits_the_row_and_each_receipt` asserts the counts rather than
 leaving it to be noticed later.
+
+**The exports are not a mirror of the screen, and cannot be.** `Unduh` on the list page offers
+the book as `.xlsx` or `.pdf`, and both write it as a two-column ledger — `Pemasukan`,
+`Pengeluaran`, running `Saldo` — where the table shows one signed amount. The table can prefix
+`+` or `−` because it is rendering text; a spreadsheet cell holding `+ Rp 1.500.000` is a
+string, and a column of strings cannot be summed, pivoted or charted, which is most of what a
+spreadsheet is for. So the direction moves into the column layout. The PDF follows the same
+shape rather than the screen's, because two files downloaded seconds apart disagreeing about
+the layout of the same book would be worse than either choice.
+
+**`App\Reports\CashBook` is the single source of what the book says** — the ordering, the
+running balance, the totals and the period. Both renderers read it and neither is allowed its
+own opinion; a figure that differed between the two files would be very hard to notice and
+impossible to explain. `TransactionsExport` decides only how those figures reach a spreadsheet
+cell, and `pdf.buku-kas` only how they reach a page.
+
+Consequences worth keeping:
+
+- **The exports impose their own sort and inherit only the filters.** They read
+  `getFilteredTableQuery()`, not `getFilteredSortedTableQuery()`. `Saldo` is a running total and
+  only means anything read oldest-first, while the table defaults to `occurred_at desc`. `id` is
+  the tiebreak: `FromQuery` paginates to chunk, so rows sharing a timestamp would otherwise
+  straddle a page boundary in an unstable order and one would repeat while another vanished.
+- **One `CashBook` instance describes one pass.** `fold()` advances the balance on every call,
+  so iterating twice doubles every total. `lines()` is the eager entry point the PDF uses —
+  dompdf builds one HTML string, so it holds the book in memory either way — and it resets
+  first so the two cannot be mixed by accident.
+- **Do not add `ShouldQueue` to `TransactionsExport`.** The balance accumulates as `map()` walks
+  the rows. Queued chunks run in separate jobs with their own instance, so each chunk would
+  restart the balance from zero — and the file would still look entirely plausible. Moving the
+  running total into a SQL window function is the prerequisite for queueing it.
+- **`WithStrictNullComparison` is load-bearing, not decoration.** See Spreadsheet.
+
+Who may download either is `TransactionResource::canExport()`, which defers to `canViewAny()`:
+the files carry no column the table does not already show the same caller, so a separate gate
+would restrict the format rather than the data. What changes is that the data leaves the panel,
+which is why the download is audited instead — nothing else could record it, since the rows are
+only read and no model event fires. Both formats write **one** event with a `format` property,
+not an event each: taking a copy of the book is a single act, and filtering the log for it
+should not mean remembering two keys.
 
 **Past entries are rewritable, and that is an open question rather than a decision.** Anyone
 holding `Update:Transaction` can change the amount on a row from months ago, and anyone holding
@@ -599,7 +643,9 @@ Chrome, no `wkhtmltopdf`, nothing to install on the host. The cost is a renderer
 CSS 2.1 support: no flexbox, no grid, no modern layout. Build PDF Blade views with tables and
 floats, not with anything borrowed from the panel's Tailwind.
 
-Nothing generates a PDF yet, and no route serves one.
+One report exists: `resources/views/pdf/buku-kas.blade.php`, downloaded from the cash book list
+by `ExportTransactionsAction::pdf()`. No route serves a PDF; it is produced inside a Filament
+action.
 
 ```php
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -608,6 +654,32 @@ Pdf::loadView('pdf.laporan', ['rows' => $rows])
     ->setPaper('a4', 'portrait')
     ->download('laporan.pdf');   // or ->stream(), or ->output() for the raw bytes
 ```
+
+**`->download()` does not work from a Filament action, and the error says nothing.** It returns
+a plain `Illuminate\Http\Response`, while Livewire's `SupportFileDownloads` only intercepts a
+`BinaryFileResponse` or a `StreamedResponse` — anything else falls through to the ordinary
+return path, where Livewire tries to JSON-encode the response object and throws
+**`Type is not supported`**. Hand back `response()->streamDownload(...)` instead. (Laravel-Excel
+is unaffected: its `download()` already returns a `BinaryFileResponse`.)
+
+**dompdf has no `pages` counter, so `counter(pages)` silently prints `0`.** Nothing in its
+`src/` refers to one; only `counter(page)` resolves. The usual workaround, `$PAGE_COUNT`, lives
+inside `<script type="text/php">` and therefore needs `enable_php` — see the table below for
+why that is not worth a page number. The supported route is a canvas call, which needs neither:
+
+```php
+$pdf->render();                                  // sets barryvdh's `rendered` flag
+$canvas = $pdf->getDomPDF()->getCanvas();
+$canvas->page_text($x, $y, 'Halaman {PAGE_NUM} dari {PAGE_COUNT}', $font, 8);
+$pdf->output();                                  // does not re-render
+```
+
+`page_text()` runs the substitution once per page, so it is also how a footer gets onto every
+page. `$font` is a font *file*, not a family — resolve it with
+`$dompdf->getFontMetrics()->getFont('sans-serif')`. Rendering first and then reaching for the
+canvas is barryvdh's own idiom; `PDF::setEncryption()` does exactly this.
+
+`<thead>` does repeat across pages without any help, so a long table stays readable.
 
 `default_paper_size` is already `a4` and should stay that way. That value comes from
 barryvdh's published config, not from dompdf — `Dompdf\Options::$defaultPaperSize` is `letter`.
@@ -636,6 +708,15 @@ Removing it and rendering the same documents produces byte-identical PDFs — 11
 bytes for Times, Helvetica and Courier either way — and the cache write is skipped in silence.
 Only an embedded font turns a missing directory into the `TypeError` above.
 
+**The generic families map to base 14, not to the DejaVu fonts dompdf ships.**
+`lib/fonts/installed-fonts.dist.json` resolves `sans-serif` to **Helvetica** and `serif` to
+**Times-Roman**; `DejaVuSans` is reachable only by naming `DejaVu Sans` explicitly. So a view
+asking for `sans-serif` embeds nothing and stays tiny — `pdf.buku-kas` renders four rows in
+about 2.8 KB — while the same view naming DejaVu would embed hundreds of kilobytes per weight
+and start depending on `storage/fonts`. Helvetica's WinAnsi covers `–`, `—` and `·`, which is
+enough for an Indonesian document; reach for DejaVu only when the text genuinely leaves that
+range. `config/dompdf.php` sets `default_font` to `serif`, so an unstyled view gets Times.
+
 **`show_warnings` is `false`, so font and asset failures are silent.** A `@font-face` that
 cannot be loaded produces a valid PDF in a fallback face and no error anywhere. The size
 difference is the tell — the same one-line document rendered 1.1 KB with the font silently
@@ -662,21 +743,69 @@ Two related settings, both verified at their shipped values:
 | `enable_remote` | `false` | correct — blocks SSRF via `<img src="http://…">`; also means remote CSS and images will not load |
 | `enable_javascript` | `true` | vendor default, not a decision. This is JS embedded *in the PDF* for the viewer to run, useless for reports; `false` is the safer setting |
 
-**PDFs are not audited.** Generating one writes nothing to `activity_log`. If a PDF ever
-exports user records or the audit log itself, that export is a read of data the panel otherwise
-gates and logs, and it should be recorded like any other — see the Audit log section for the
-shape (`activity()` with a `monitoring` log name).
+**A PDF is a read surface, so it is gated and audited like any other.** Generating one fires no
+model event, so nothing records it unless the caller does. The cash book report is the worked
+example: authorization on the resource (`TransactionResource::canExport()`) and an `activity()`
+entry under the `monitoring` log name — the *same* entry the spreadsheet writes, distinguished
+by a `format` property rather than a second event key. A PDF of records the caller cannot open
+in the panel would be a way around the policy that guards the screen.
+
+**Interpolating user text is where `chroot` stops being theoretical.** `pdf.buku-kas` renders a
+description someone typed into a form, so every value in it goes through `{{ }}`.
+`test_a_description_is_escaped_rather_than_parsed_as_markup` asserts the template never
+switches to `{!! !!}` — a single such change would hand a user's markup to a parser that can
+read `.env`.
 
 ## Spreadsheet
 
-`maatwebsite/excel` v4.0.0, writing and reading through `phpoffice/phpspreadsheet` v5. Nothing
-generates a spreadsheet yet, and no route serves one.
+`maatwebsite/excel` v4.0.0, writing and reading through `phpoffice/phpspreadsheet` v5.
+
+One export exists: `App\Exports\TransactionsExport`, downloaded from the cash book list by
+`ExportTransactionsAction::excel()`. It renders `App\Reports\CashBook`, which the PDF report
+reads as well — see Keuangan. Nothing imports yet.
 
 ```php
 use Maatwebsite\Excel\Facades\Excel;
 
 Excel::download(new LaporanExport, 'laporan.xlsx');   // or ->store('local', ...), ->raw(...)
 ```
+
+A Filament action can return the `BinaryFileResponse` that `download()` produces —
+Livewire's `SupportFileDownloads` intercepts a returned `BinaryFileResponse` or
+`StreamedResponse` and turns it into a browser download. Anything the action needs to do
+*about* the export (auditing, notifications) has to happen before that return, and the file is
+fully written by the time `download()` hands it back, so a count accumulated during the export
+is final at that point.
+
+**`0` and `null` are the same value to `Worksheet::fromArray()`, and this bites twice.** It
+skips any cell equal to its `$nullValue`, comparing loosely — and `0 != null` is `false` in
+PHP, so **every zero in the file is silently dropped**. There is no error; the cell simply is
+not created, and a zero reads back as an empty cell that means "not applicable".
+
+It has to be closed in two separate places, because there are two paths onto the sheet:
+
+| Path | Fix |
+|------|-----|
+| rows from `map()`, written by `Sheet::appendRows()` | implement `WithStrictNullComparison` on the export |
+| anything written directly, e.g. a totals row in `AfterSheet` | pass `strictNullComparison: true` as `fromArray()`'s fourth argument |
+
+`Sheet::hasStrictNullComparison()` also honours `excel.exports.strict_null_comparison`, which
+is published here and left at its default `false`. Flipping that would close the first row of
+the table for every export at once — and it is the wrong lever. Whether a `0` is data or
+absence is a property of what a given export means, not a global preference, and a future
+export that genuinely wants blank zeros would then have no way to say so. The concern says it
+per export, where the reasoning lives.
+
+`TransactionsExport` does both, and
+`test_a_zero_prints_as_zero_while_a_blank_side_stays_empty` asserts the distinction survives:
+`null` stays an empty cell, `0` prints a zero.
+
+**Write numbers and dates as values, not as formatted strings.** A figure belongs in the cell
+as an integer with a number format (`'"Rp" #,##0'`) beside it, and a timestamp as
+`Shared\Date::dateTimeToExcel()` with `'dd/mm/yyyy hh:mm'`. Format codes are stored invariant
+and Excel substitutes the viewer's own regional separators, so the same file reads
+`Rp 1.500.000` in Indonesia without the writer having to guess where it will be opened. Format
+the value and both properties are gone — no sums, no date sort, no locale.
 
 **v4 was chosen over 3.1, and the version matters more than usual here.** Both lines were
 released on the same day, both accept `illuminate ^13`, and the documentation site serves
@@ -729,11 +858,13 @@ dev` runs `queue:listen`, so it only bites a deploy.
 that ties — `occurred_at` on rows entered in the same minute, say — silently repeats and drops
 records across page boundaries. Order by something unique, or add `id` as a tiebreak.
 
-**Exports are not audited, and they are a read surface.** Same reasoning as the PDF section,
-and more pressing: a spreadsheet of `users` or of `activity_log` is a bulk read of data every
-screen in the panel gates by policy. The first export route should arrive with an authorization
-test and, if it exports records rather than aggregates, an `activity()` entry under the
-`monitoring` log name.
+**An export is a read surface, so it is gated and audited.** A spreadsheet of records is a bulk
+read of data every screen in the panel gates by policy, and unlike a screen it leaves the
+building. `ExportTransactionsAction` is the worked example: authorization on the resource
+(`TransactionResource::canExport()`), an `activity()` entry under the `monitoring` log name with
+the row count, the format and the filters that were active, and `TransactionExportTest`
+asserting both. Copy that shape for the next one — nothing else can record a read, since no
+model event fires.
 
 ## Gotchas
 
@@ -863,7 +994,9 @@ joined.
 
 Log names in use: `user` (model changes, role grants, two-factor changes), `transaction`
 (cash book rows and receipt deletions — see Keuangan) and `monitoring`
-(deletions, prunes).
+(deletions, prunes, and the spreadsheet export — a read that leaves the panel is recorded
+here rather than under `transaction`, because it is an operation on the book rather than a
+change to it).
 Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 
 ## Filament conventions
@@ -932,7 +1065,15 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 - Actions mounted in more than one place (a table row *and* a page header) belong in their own
   class under `Resources/<Name>/Actions/`, returning a configured `Action` from a static
   `make()`. Filament's own MFA actions have that shape. Two copies of an authorization rule is
-  one copy too many.
+  one copy too many. Variants of one action live in the *same* class as several static
+  factories over a shared private base — `ExportTransactionsAction::excel()` and `::pdf()`
+  differ only in the renderer, and splitting them would duplicate the gate and the audit call.
+- **An action that returns a download must return a `BinaryFileResponse` or a
+  `StreamedResponse`.** Livewire's `SupportFileDownloads` intercepts exactly those two; any
+  other response object falls through to the ordinary return path and Livewire tries to
+  JSON-encode it, throwing **`Type is not supported`** — a message that names neither the
+  action nor the response. `Excel::download()` already returns the right type;
+  `Pdf::download()` does not, so wrap it in `response()->streamDownload(...)`. See PDF.
 - Before deploying run `php artisan filament:optimize` — caches component discovery and Blade
   icons. Without it every request pays a directory scan. Re-run `filament:optimize-clear` after
   editing the panel provider, or the cached component list masks your change.
@@ -940,7 +1081,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 ## Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-140 tests at the last count.
+157 tests at the last count.
 
 | File | Locks in |
 |------|----------|
@@ -953,6 +1094,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 | `MonitoringRetentionTest` | retention saves, blank means forever, prune scope and summary |
 | `TwoFactorAuthenticationTest` | password alone is refused, valid code passes, secret never leaks, three audit events, admin reset |
 | `TransactionResourceTest` | policy gating, integer rupiah and what a fractional amount costs, grouped input round-trips and an ambiguous one is left alone, `occurred_at` default, receipts stay private and unsigned reads are refused, receipt / cascade / bulk delete auditing |
+| `TransactionExportTest` | who may download the book, the two-column ledger and its running balance, chronological order regardless of the table sort, filters carry over, amounts and dates are values rather than text, `0` prints while a blank side stays empty, both formats download and audit under one event, the PDF escapes user text and signs a negative balance readably, an empty book still renders |
 | `PageViewsOnlyTest` (Unit) | which requests count as a visit |
 | `WholeRupiahTest` (Unit) | which amounts are whole rupiah, that untidy grouping is accepted, and that `1500.75` is refused rather than regrouped |
 
@@ -963,16 +1105,30 @@ faked disk always answers 404 for a link that would work in production. The spli
 `ServeFile` checks the signature *before* it looks for the file; the accepting case writes a
 throwaway file to the real `local` disk and cleans it up in a `finally`.
 
-**PDF and spreadsheet export have no coverage**, because nothing generates either yet. Both add
-a read surface that does not pass through a Shield policy, so the first route that returns one
-should arrive with its own authorization test — a file of records the caller cannot view in the
-panel is a way around the policy that guards the screen.
+**A PDF is asserted twice, in two different places.** dompdf compresses object streams, so the
+rendered text is not greppable in the output — assertions on the bytes can only reach as far as
+the `%PDF-` magic. What the document *says* is asserted against the rendered **HTML** instead
+(`view(...)->render()`), which is where escaping and number formatting are decided, and against
+`CashBook`, which is the source both renderers read. `TransactionExportTest` does all three.
 
-A PDF test should assert on the response bytes starting `%PDF-`, not on the rendered text;
-dompdf compresses object streams, so the source strings are not greppable in the output. An
-`xlsx` is a zip, so it has the same problem and the same answer — assert on the `PK` magic
-bytes, or use `Excel::fake()` with `assertDownloaded()` and read the rows back rather than
-parsing the file.
+Whatever renders a PDF, verify it by eye once as well: `show_warnings` is `false`, so a
+mis-specified font or a missing asset produces a valid document with the problem in it and
+nothing in the log. `pdftotext -layout` is enough to check the page structure, the totals and
+the page numbering without opening a viewer.
+
+**A spreadsheet is asserted by reading it back, not by grepping it.** An `xlsx` is a zip, so
+its cell values are not in the bytes. `TransactionExportTest` renders with
+`Excel::raw($export, Excel::XLSX)`, writes the result to a temp file — phpspreadsheet loads
+from a path, not a string — and inspects cells through `IOFactory::load()`. That is what makes
+the interesting assertions possible at all: `getValue()` proves an amount is an integer rather
+than a formatted string, and `getStyle(...)->getNumberFormat()->getFormatCode()` proves the
+rupiah is a display format rather than part of the data.
+
+The download itself is a separate concern and tested through Livewire:
+`->callAction(TestAction::make('export'))->assertFileDownloaded('buku-kas-….xlsx')`. Freeze the
+clock with `Carbon::setTestNow()` first, since the file name carries a timestamp.
+`Excel::fake()` with `assertDownloaded()` is the other route, and it checks that an export was
+dispatched rather than what ended up in the cells.
 
 `Tests\TestCase` provides `userWithRole()`, `superAdmin()` and `seedRoles()`. Roles come from
 `ShieldSeeder` so tests exercise the same data a deploy produces, and the permission cache is
