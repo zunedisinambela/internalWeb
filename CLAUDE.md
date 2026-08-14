@@ -30,9 +30,12 @@ php artisan storage:link           # NOT part of `composer setup` — see Media
   and `/admin/authentications`. Installed as a data collector only; its own routes and Blade
   dashboards are disabled. See Monitoring.
 - **spatie/laravel-medialibrary v11** — file attachments on Eloquent models, `media` table.
-  Installed and migrated, but **no model uses it yet** and there is no panel screen for it.
+  Used by `App\Models\Transaction` for receipt images, on the private `local` disk.
   v11, not v12: spatie backported `illuminate ^13` into the v11 line, while v12 is unreleased
   and requires `php ^8.4` against this project's `^8.3` pin. See Media.
+- **filament/spatie-laravel-media-library-plugin v5.7** — the upload field, image column and
+  image entry that put medialibrary into the panel. A separate package from Filament, and it
+  pins medialibrary to `^11.0`. See Media.
 - **barryvdh/laravel-dompdf v3.1** on `dompdf/dompdf` v3 — HTML-to-PDF, facade
   `Barryvdh\DomPDF\Facade\Pdf`. Pure PHP, no headless browser, no system binary. Nothing
   generates a PDF yet. v3.1.2 is the first release with `illuminate ^13`. See PDF.
@@ -79,7 +82,8 @@ rendering as the raw key. That also means a forgotten translation is easy to mis
 **What stays English on purpose:**
 
 - Activity log `event` keys (`role_granted`, `visit_deleted`, `records_pruned`,
-  `two_factor_reset`), role names (`super_admin`) and permission names (`Delete:Activity`).
+  `two_factor_reset`, `receipt_deleted`), enum values stored in columns (`income`, `expense` —
+  see Keuangan), role names (`super_admin`) and permission names (`Delete:Activity`).
   These are filtered on and asserted in tests. Only the human-readable description is
   translated — `LogRoleChange` and `User::booted()` both map the two separately for exactly
   this reason.
@@ -109,6 +113,11 @@ This gate is not optional: `opcodesio/log-viewer` only locks itself down when `A
 exactly `production` (`AuthorizeLogViewer` middleware checks `App::isProduction()`), so without
 it staging and every other environment serve log contents to anonymous visitors.
 
+**Receipt files** — `/storage/{path}` is the third read surface, and the only one not guarded by
+a role. It serves the private disk on a signed, expiring URL, so within that window the link
+works for whoever holds it, signed in or not. That is the weakest of the three gates by design;
+what it protects and what it does not are set out under Media.
+
 **Managing users** — `/admin/users` (`app/Filament/Resources/Users/`) creates accounts, sets
 passwords and assigns roles. Since a role is what grants access, this screen is how someone
 gets into the panel at all. Note it does not restrict *which* role may be handed out: anyone
@@ -116,7 +125,7 @@ who can reach it can grant `super_admin`, including to themselves. That is fine 
 super admins hold `Create:User`, but a future staff role with user-management permissions
 would be able to self-promote unless the role select is constrained.
 
-**Permissions** — Shield generated 61 permissions named `Action:Subject` (`ViewAny:Activity`).
+**Permissions** — Shield generated 73 permissions named `Action:Subject` (`ViewAny:Activity`).
 `super_admin` holds all of them and short-circuits every check through a `Gate::before` hook
 (`filament-shield.super_admin.intercept_gate`). Regenerate after adding a resource or page:
 
@@ -193,6 +202,103 @@ a role with `Update:User` and asserts it can edit the user but not clear their s
 `TwoFactorAuthenticationTest::test_a_correct_password_alone_does_not_sign_in_a_user_with_two_factor`
 is the assertion that matters — without it every other test in that file still passes while
 two-factor does nothing.
+
+## Keuangan
+
+The cash book, and the one screen in this panel that exists for its own sake rather than to
+keep the others honest. `/admin/transactions` (`app/Filament/Resources/Transactions/`) records
+money in and money out, each row optionally carrying photographs of its receipts.
+
+| Piece | Where |
+|-------|-------|
+| Model | `App\Models\Transaction` — the only `InteractsWithMedia` model here |
+| Direction | `App\Enums\TransactionType` — `income` / `expense` |
+| Totals | `Resources/Transactions/Widgets/TransactionOverview` |
+| Receipts | media collection `Transaction::RECEIPTS`, private `local` disk |
+
+**Amounts are whole rupiah in an `unsignedBigInteger`, never a decimal.** SQLite has no real
+`DECIMAL` type: `decimal(15,2)` becomes NUMERIC affinity and comes back through PDO as a float,
+which cannot represent `0.1` exactly, so totals drift once the numbers get large. IDR is not
+spent in fractions, so integer rupiah removes the problem rather than managing it. Two
+consequences that are easy to undo by accident:
+
+- The form sets `->integer()->step(1)`, and that guard is the only thing catching a fractional
+  amount. SQLite is loosely typed: a `1500.75` reaching an INTEGER-affinity column is stored as
+  a real, raises nothing, and comes back as `1500` once the model's `integer` cast has run.
+  `test_a_fractional_amount_reaching_the_model_is_lost_quietly` pins that behaviour so the
+  reason for the guard survives a refactor of the form.
+- The table and infolist format with `number_format($state, 0, ',', '.')` rather than
+  `->money('IDR')`. `money()` would render the figure correctly — it does not divide by 100
+  unless told to — but it cannot prefix the `+` / `−` that says which direction the money went,
+  and that sign is the point of the column.
+
+`unsigned` is deliberate too: direction lives in `type`, so a negative expense would make the
+same row readable two ways.
+
+**`occurred_at` is not `created_at`.** It defaults to `now()` when the form opens — which is
+what "waktu saat dibuat" asks for — but stays editable, because a receipt found a week later
+has to be datable to when the money actually moved. `now()` is already WIB (see Locale and
+timezone), so nothing is converted anywhere in this feature.
+
+**Enum values are English, labels are Indonesian.** `income` / `expense` are what land in the
+column, get filtered on and get asserted in tests; `TransactionType::getLabel()` is the only
+user-facing text. Same rule as the activity log `event` keys, and for the same reason — a
+reworded translation must not become a data migration.
+
+**Receipts are on the private disk.** `registerMediaCollections()` pins `->useDisk('local')`.
+A receipt photograph carries amounts, account numbers and addresses, so publishing it by URL on
+the `public` disk would be a read surface that sidesteps every policy the rest of the panel
+enforces. The mechanics of how the private disk is served, and the limits of that protection,
+are under Media. All three Filament components that render a receipt set
+`->visibility('private')`; drop it from any one of them and that surface silently renders
+broken images.
+
+The `thumb` conversion is `->nonQueued()`, and does double duty: it survives a deploy with no
+queue worker, and being re-encoded it drops almost all of the EXIF the phone wrote into the
+original. Lists and infolists show the conversion, so the original — GPS coordinates included —
+is only ever reached by a deliberate signed request.
+
+**Auditing is split three ways**, because no single mechanism can see all of it:
+
+| Change | Recorded by |
+|--------|-------------|
+| `type`, `amount`, `description`, `occurred_at` | `LogsActivity`, log name `transaction` |
+| a receipt removed | `AppServiceProvider::registerReceiptDeletionLogging()`, event `receipt_deleted` |
+| a receipt attached or replaced | **nothing** |
+
+Deleting a whole transaction writes its own `deleted` entry *and* one `receipt_deleted` per
+attached file. That duplication is wanted: a receipt removed on its own and a receipt that went
+down with its row are different events, and the log should not have to infer which happened.
+It depends on two unrelated mechanisms lining up — medialibrary removing its files from the
+`deleting` event, and the `Media::deleted` listener firing once per row — so
+`test_deleting_a_transaction_audits_the_row_and_each_receipt` asserts the counts rather than
+leaving it to be noticed later.
+
+**Past entries are rewritable, and that is an open question rather than a decision.** Anyone
+holding `Update:Transaction` can change the amount on a row from months ago, and anyone holding
+`Delete:Transaction` can remove it; only `activity_log` records that it happened. That is the
+normal Shield behaviour and it is deliberate only in the sense that nothing overrode it — the
+resource leaves `canEdit()` and `canDelete()` unimplemented so the policy decides, the way the
+Filament conventions section says to.
+
+The alternative is an append-only book: rows lock after some period and corrections are entered
+as reversing transactions. It is more honest to audit and more annoying to use, and it is a
+question about how this organisation keeps its books rather than a technical one. If it is ever
+answered, the rules go on `TransactionResource` next to the other record-level checks — not on
+the buttons, or the bulk path stays open. `UserResource::canDelete()` is the shape to copy.
+
+**The author is stamped server-side.** `CreateTransaction::mutateFormDataBeforeCreate()` sets
+`user_id` from the session rather than exposing a select, so a crafted request cannot attribute
+an entry to someone else. `Transaction::booted()` does the same for rows created outside a form
+and leaves it null when nobody is signed in — an unattributed row is honest, a guessed one is
+not. `user_id` is `nullOnDelete`, matching the monitoring tables: removing an account must not
+erase the financial record it left behind.
+
+**The totals widget lives under the resource, not in `app/Filament/Widgets`.** The panel
+provider calls `discoverWidgets()` on that directory and everything it finds lands on the
+dashboard — which is deliberately limited to `AccountWidget`, and which anyone holding any role
+can open. These figures are gated by the transaction policy, so the file stays beside the
+resource that checks it.
 
 ## Monitoring
 
@@ -313,11 +419,14 @@ published config claims this exact one but expects a fully-qualified driver clas
 sharing it means setting the variable breaks whichever package did not get the format it
 wanted — while the package that *appears* broken is not the one whose setting changed.
 
-**Nothing uses medialibrary yet.** No model carries `InteractsWithMedia`, the `media` table is
-empty, and the panel has no upload field. One question is still open and is worth settling
-before the first collection exists rather than after: **which disk**. Moving files between
-disks later means rewriting the `disk` column on every row *and* relocating the files, so it is
-the medialibrary equivalent of the timezone decision under Locale and timezone.
+**`App\Models\Transaction` is the only model using it**, through the `receipts` collection —
+see Keuangan. That model settled the disk question this section used to leave open, and the
+answer is binding on whatever attaches files next: **the private `local` disk, not `public`**.
+Moving files between disks later means rewriting the `disk` column on every row *and*
+relocating the files, so it is the medialibrary equivalent of the timezone decision under
+Locale and timezone. A new collection should say `->useDisk('local')` unless there is a
+specific reason its contents are safe to publish by URL — see the paragraph on the `public`
+disk below for what that decision actually costs.
 
 **The trait is safe to add to `User`** despite the `User::booted()` gotcha. `InteractsWithMedia`
 registers its hooks from `bootInteractsWithMedia()`, which Eloquent calls *in addition to*
@@ -332,16 +441,50 @@ access control every other screen enforces. Everything in this panel is otherwis
 so anything more sensitive than an avatar belongs on a private disk behind a controller that
 calls `authorize()` and streams via `Storage::disk(...)->response()`.
 
-**`php artisan storage:link` is not in `composer setup`.** The symlink is gitignored
-(`/public/storage`), so a fresh clone has no `public/storage` and every media URL 404s while
-uploads themselves succeed. Same failure shape as the missing scheduler under Monitoring: the
-write path works, so nothing looks broken until someone tries to read.
+**The private disk is served by Laravel, not by the web server.** `config/filesystems.php` sets
+`serve => true` on `local` and gives it no `visibility` key, so Laravel registers a
+`/storage/{path}` route for it and `ServeFile` treats it as private: every request without a
+valid relative signature is refused (403 outside production, 404 in it) *before* the file is
+looked for. `Storage::disk('local')->temporaryUrl($path, $expiry)` is what mints an acceptable
+link.
 
-**Conversions run on the queue.** `QUEUE_CONNECTION=database`, so thumbnails are generated by
-`PerformConversionsJob` rather than inline. `php artisan dev` runs `queue:listen`, so this
-works locally. A deploy without a queue worker uploads originals fine and never produces a
-single conversion — the log stays clean because nothing failed, the jobs simply sit in the
-table.
+**Both local disks answer at `/storage`, and only one of them is a route.** `local` has no `url`
+key so its served route defaults to `/storage/{path}`; `public` has `url` = `APP_URL/storage`,
+which parses to the same path. Today that does not collide, because only `local` sets
+`serve => true` — but it has two consequences:
+
+- The `public/storage` symlink is checked first by the web server, for both `artisan serve` and
+  a normal `try_files`. A file present under `storage/app/public` therefore shadows a private
+  file at the same relative path, and is delivered with no signature check at all. Nothing hits
+  this today because `receipts` is the only collection and it is entirely on `local`.
+- Setting `serve => true` on `public` throws `InvalidArgumentException` at boot —
+  *"The [public] disk conflicts with the [local] disk at [/storage]"* — from
+  `FilesystemServiceProvider::serveFiles()`. Give one of them a distinct `url` first.
+
+Filament asks for that signed link only when a component is marked `->visibility('private')`.
+Without it `SpatieMediaLibraryFileUpload`, `SpatieMediaLibraryImageColumn` and
+`SpatieMediaLibraryImageEntry` each fall through to a plain `getUrl()`, the private disk refuses
+it, and the screen renders a broken image with nothing in the log. All three call sites in
+`Resources/Transactions` set it.
+
+A signed URL is **not** a policy check: for its lifetime it works for whoever holds it. That is
+a deliberate step up from the public disk, not the end of the road. The full answer is still a
+controller that calls `authorize()` and streams via `Storage::disk(...)->response()`, and it
+becomes worth building the moment these files are linked to from outside the panel.
+
+**`php artisan storage:link` is not in `composer setup`.** The symlink is gitignored
+(`/public/storage`), so a fresh clone has no `public/storage` and every `public`-disk media URL
+404s while uploads themselves succeed. Same failure shape as the missing scheduler under
+Monitoring: the write path works, so nothing looks broken until someone tries to read. Nothing
+currently depends on it — `receipts` is on `local`, which needs no symlink — so this only bites
+the first collection that opts back into `public`.
+
+**Conversions run on the queue by default.** `QUEUE_CONNECTION=database`, so thumbnails are
+generated by `PerformConversionsJob` rather than inline. `php artisan dev` runs `queue:listen`,
+so this works locally. A deploy without a queue worker uploads originals fine and never produces
+a single conversion — the log stays clean because nothing failed, the jobs simply sit in the
+table. `Transaction`'s `thumb` conversion opts out with `->nonQueued()` for exactly that reason;
+weigh the same trade-off for any conversion small enough to do in the request.
 
 **`Media` is a vendor-namespace model**, so if it ever gets a panel screen, `MediaPolicy` must
 be registered by hand in `AppServiceProvider::registerVendorModelPolicies()`. Unregistered, the
@@ -357,14 +500,20 @@ consequences worth knowing before relying on it:
   spot the Monitoring section closes with `->fetchSelectedRecords()` on every bulk action — but
   here the cost is orphaned *files* on disk, which no later query can find to clean up.
 
-**Media changes are not audited.** `activity_log` records nothing when a file is attached,
-replaced or removed. Adding `LogsActivity` to the media model would need the usual explicit
-allowlist — `file_name` and `collection_name`, never `custom_properties`, which is a free-form
-JSON bag whose contents nobody controls centrally.
+**Only deletions are audited, and only for `Transaction`.**
+`AppServiceProvider::registerReceiptDeletionLogging()` hooks `Media::deleted` and writes a
+`receipt_deleted` entry when the owner is a `Transaction`. Attaching and replacing a file are
+**not** recorded, and no other model's media is recorded at all. Media is a relation, so
+`LogsActivity` cannot see it — this is the same split `LogRoleChange` makes for roles. Extending
+it to another model means widening that `model_type` check, not adding a second listener.
 
-**Filament integration is not installed.** Upload fields in the panel need
-`filament/spatie-laravel-media-library-plugin` (v5.7.6 is current) for
-`SpatieMediaLibraryFileUpload`. It is a separate package and was not added. Note it constrains
+Adding `LogsActivity` to the media model itself would need the usual explicit allowlist —
+`file_name` and `collection_name`, never `custom_properties`, which is a free-form JSON bag
+whose contents nobody controls centrally.
+
+**Filament integration is `filament/spatie-laravel-media-library-plugin` v5.7.6**, a separate
+package from Filament itself, and the source of `SpatieMediaLibraryFileUpload`,
+`SpatieMediaLibraryImageColumn` and `SpatieMediaLibraryImageEntry`. Note it constrains
 `spatie/laravel-medialibrary` to `^11.0` — a second reason the v11 line was the right choice
 over the unreleased v12.
 
@@ -441,7 +590,10 @@ shape (`activity()` with a `monitoring` log name).
 **Uploads keep their EXIF.** Medialibrary stores the original file untouched, so GPS
 coordinates and device serials from a phone camera survive into whatever disk it lands on — and
 on the `public` disk that metadata is fetchable by URL along with the image. Conversions are
-re-encoded and lose most of it, but the original is what `getUrl()` returns by default.
+re-encoded and lose most of it, but the original is what `getUrl()` returns by default. The
+receipt screens work around this rather than solve it: they render the `thumb` conversion
+everywhere, so the original is only reached by a deliberate signed request. Nothing strips the
+original, and stripping it would be a decision about altering what a user uploaded.
 
 **Policies for vendor models are not auto-discovered.** Laravel maps `App\Models\X` to
 `App\Policies\XPolicy`. `Activity` lives in a vendor namespace, so `ActivityPolicy` is
@@ -465,9 +617,11 @@ properties; match the file you are editing.
 columns are absent on purpose: they are written by direct assignment, and a fillable secret is
 settable from any request that reaches a user form.
 
-**`User::booted()` is already taken**, by the two-factor audit hook. Eloquent allows one
-`booted()` per class, so a second definition silently replaces the first rather than erroring —
-add listeners inside the existing method.
+**`booted()` is already taken on `User` and on `Transaction`** — by the two-factor audit hook
+and by the author stamp respectively. Eloquent allows one `booted()` per class, so a second
+definition silently replaces the first rather than erroring. Add listeners inside the existing
+method. Trait boot methods are exempt: `bootInteractsWithMedia()` runs *in addition to*
+`Transaction::booted()`, which is why the two coexist there.
 
 **`permission.events_enabled` is set to `true` on purpose.** It ships as `false`. Role grants
 and revocations are audited through those events, so turning it off silently removes the
@@ -542,9 +696,13 @@ with the role names in `properties`. Since a role is what grants panel access, t
 privilege-escalation trail — if it stops working the log looks healthy while missing the most
 important events.
 
+**`Transaction` uses the trait too**, log name `transaction`, allowlist
+`['type', 'amount', 'description', 'occurred_at']` — and its receipts are audited by a separate
+listener for the same reason roles are, since neither is a column. See Keuangan.
+
 When adding the trait to another model, keep the same shape: name the log, list attributes
-explicitly, and add a test asserting secrets never appear in `attribute_changes`
-(`UserActivityLoggingTest` has one to copy).
+explicitly, and add a test asserting nothing outside the allowlist reaches `attribute_changes`
+(`UserActivityLoggingTest` and `TransactionResourceTest` each have one to copy).
 
 The UI is `app/Filament/Resources/Activities/`. `canCreate()` and `canEdit()` return `false`,
 so Filament never registers create or edit routes — an editable audit entry is worse than a
@@ -553,14 +711,17 @@ by `Delete:Activity` / `DeleteAny:Activity` and logged to the file log; see Moni
 full chain. The query eager-loads `causer` and `subject` because both are morphs and cannot be
 joined.
 
-Log names in use: `user` (model changes, role grants, two-factor changes) and `monitoring`
+Log names in use: `user` (model changes, role grants, two-factor changes), `transaction`
+(cash book rows and receipt deletions — see Keuangan) and `monitoring`
 (deletions, prunes).
 Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 
 ## Filament conventions
 
 - Resources, Pages and Widgets are auto-discovered from `app/Filament/{Resources,Pages,Widgets}`.
-  Creating a class there is enough; no manual registration.
+  Creating a class there is enough; no manual registration. `Filament/Widgets` does not currently
+  exist — the panel provider still points `discoverWidgets()` at it, which is harmless, but see
+  the dashboard note below before creating it.
 - Generate with `php artisan make:filament-resource`, `make:filament-page`, `make:filament-widget`.
 - v5 renamed the filter builder: use `->schema([...])`, not the deprecated `->form([...])`.
 - **A page's body is a schema, not Blade.** v5 has no `filament-panels::form.actions`
@@ -589,6 +750,16 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 - Dashboard widgets: `AccountWidget` only. Filament's default `FilamentInfoWidget` (version /
   docs / GitHub branding card) was deliberately removed from `->widgets([...])` — do not add it
   back when regenerating or upgrading the panel provider.
+- **A widget in `app/Filament/Widgets` is a dashboard widget.** `discoverWidgets()` scans that
+  directory and everything it finds renders on the dashboard, which anyone holding any role can
+  open. A widget that shows data guarded by a resource policy belongs under that resource
+  (`Resources/<Name>/Widgets/`) and in its page's `getHeaderWidgets()`, where the policy is
+  already enforced. `TransactionOverview` is the worked example.
+- `TextColumn::money()` does **not** divide by 100 — its `$divideBy` parameter defaults to `0`,
+  which is falsy, so the state is formatted as given. Pass `divideBy: 100` explicitly for a
+  column stored in minor units. It also renders two decimal places unless given
+  `decimalPlaces: 0`, and it cannot prefix a sign, which is why Keuangan formats amounts with
+  `number_format()` instead.
 - An action that weakens someone else's security should ask for the actor's **own** password:
   `TextInput::make('password')->password()->required()->currentPassword()`.
   `->requiresConfirmation()` stops a misclick; it does not stop a passer-by at an unlocked
@@ -604,7 +775,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 ## Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-90 tests at the last count.
+108 tests at the last count.
 
 | File | Locks in |
 |------|----------|
@@ -616,15 +787,20 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 | `UserMonitoringTest` | package routes stay gone, panel middleware coverage, delete auditing |
 | `MonitoringRetentionTest` | retention saves, blank means forever, prune scope and summary |
 | `TwoFactorAuthenticationTest` | password alone is refused, valid code passes, secret never leaks, three audit events, admin reset |
+| `TransactionResourceTest` | policy gating, integer rupiah and what a fractional amount costs, `occurred_at` default, receipts stay private and unsigned reads are refused, receipt / cascade / bulk delete auditing |
 | `PageViewsOnlyTest` (Unit) | which requests count as a visit |
 
-**Media and PDF have no coverage**, because nothing uses either yet. Both add read surfaces
-that do not currently pass through a Shield policy, so the first use of each should arrive with
-its own authorization test:
+**`Storage::fake()` cannot test signed URLs.** It replaces the disk's temporary-URL builder with
+a stub returning `URL::to($path.'?expiration=…')` — no signature, no `/storage` prefix — so a
+faked disk always answers 404 for a link that would work in production. The split in
+`TransactionResourceTest` is the way around it: the refusal case runs on a faked disk, because
+`ServeFile` checks the signature *before* it looks for the file; the accepting case writes a
+throwaway file to the real `local` disk and cleans it up in a `finally`.
 
-- the first model to take `InteractsWithMedia` — who may read a file, who may attach one
-- the first route that returns a PDF — a PDF of records the caller cannot view in the panel is
-  a way around the policy that guards the screen
+**PDF has no coverage**, because nothing generates one yet. It adds a read surface that does not
+pass through a Shield policy, so the first route that returns a PDF should arrive with its own
+authorization test — a PDF of records the caller cannot view in the panel is a way around the
+policy that guards the screen.
 
 A PDF test should assert on the response bytes starting `%PDF-`, not on the rendered text;
 dompdf compresses object streams, so the source strings are not greppable in the output.
@@ -632,6 +808,11 @@ dompdf compresses object streams, so the source strings are not greppable in the
 `Tests\TestCase` provides `userWithRole()`, `superAdmin()` and `seedRoles()`. Roles come from
 `ShieldSeeder` so tests exercise the same data a deploy produces, and the permission cache is
 cleared afterwards — without that, a role created mid-test stays invisible to `Gate` checks.
+
+`TransactionFactory` has `income()` and `expense()` states, both taking an explicit amount, so a
+test that asserts on a total never depends on a random one. `user_id` defaults to null: the
+model's `creating()` hook fills it from the session, and a factory that guessed an author would
+hide that.
 
 Filament actions are tested through Livewire:
 `Livewire::test(ListVisits::class)->callAction(TestAction::make('delete')->table($record))`,
