@@ -245,6 +245,15 @@ column, get filtered on and get asserted in tests; `TransactionType::getLabel()`
 user-facing text. Same rule as the activity log `event` keys, and for the same reason — a
 reworded translation must not become a data migration.
 
+**Uploads go through medialibrary, not a plain `FileUpload`.** There is no path column on
+`transactions` — attachments are rows in the `media` table keyed by morph, which is why "more
+than one photo" costs no schema change and no migration. Three components bind to the
+`receipts` collection *by name*: `SpatieMediaLibraryFileUpload` on the form,
+`SpatieMediaLibraryImageColumn` on the table, `SpatieMediaLibraryImageEntry` on the infolist.
+All three come from `filament/spatie-laravel-media-library-plugin`, not from Filament itself.
+A name that does not match a registered collection is not an error — see Media for where the
+file ends up when it happens.
+
 **Receipts are on the private disk.** `registerMediaCollections()` pins `->useDisk('local')`.
 A receipt photograph carries amounts, account numbers and addresses, so publishing it by URL on
 the `public` disk would be a read surface that sidesteps every policy the rest of the panel
@@ -428,6 +437,29 @@ Locale and timezone. A new collection should say `->useDisk('local')` unless the
 specific reason its contents are safe to publish by URL — see the paragraph on the `public`
 disk below for what that decision actually costs.
 
+**`->useDisk()` is only the second of three places the disk is decided, and the fall-throughs
+disagree.** Which one applies depends on how the file was attached:
+
+| Attached by | Resolution order |
+|-------------|------------------|
+| a Filament field | `->disk()` on the field → registered collection's `useDisk()` → `config('filament.default_filesystem_disk')` |
+| `addMedia()->toMediaCollection()` in code | the explicit `$diskName` argument → registered collection's `useDisk()` → `config('media-library.disk_name')` |
+
+Those two last resorts are **not** the same disk here. `filament.default_filesystem_disk`
+follows `FILESYSTEM_DISK`, which is `local`; `media-library.disk_name` is the package default,
+which is `public`. So a collection name that matches no registered collection — a typo, or a
+collection nobody declared — skips `useDisk()` entirely and lands on `public` when written from
+app code, while the same typo written through a Filament field lands on `local`. Neither raises
+anything: the upload succeeds, the row is written, and only the `disk` column says where it
+went.
+
+`->visibility('private')` closes the Filament half of that: the plugin's `getDiskName()`
+rewrites a resolved `public` back to `local` whenever the component is marked private, at both
+fall-through steps. So the flag is not only about signed URLs — it also steers the disk when
+the collection lookup misses. There is no equivalent on the `addMedia()` path, which is why
+code attaching files outside a form should name the disk itself rather than trust the
+collection to be found.
+
 **The trait is safe to add to `User`** despite the `User::booted()` gotcha. `InteractsWithMedia`
 registers its hooks from `bootInteractsWithMedia()`, which Eloquent calls *in addition to*
 `booted()` rather than instead of it. The one-`booted()`-per-class rule does not apply to trait
@@ -553,6 +585,13 @@ out of the repo and writable by the web user. **Base 14 fonts (Helvetica, Times,
 none of this**, so a report that does not declare `@font-face` renders fine even with the
 directory gone. That is exactly why the crash shows up late, on the first PDF that wants a
 brand font.
+
+They do still *write* there when the directory exists, which makes that easy to misread: one
+base-14 render drops `Times-Roman.afm.json`, `Helvetica.afm.json` and friends into
+`storage/fonts`, so finding those files is not evidence that base 14 depends on the directory.
+Removing it and rendering the same documents produces byte-identical PDFs — 1137, 1135 and 1133
+bytes for Times, Helvetica and Courier either way — and the cache write is skipped in silence.
+Only an embedded font turns a missing directory into the `TypeError` above.
 
 **`show_warnings` is `false`, so font and asset failures are silent.** A `@font-face` that
 cannot be loaded produces a valid PDF in a fallback face and no error anywhere. The size
