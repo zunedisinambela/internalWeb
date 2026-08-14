@@ -213,6 +213,7 @@ money in and money out, each row optionally carrying photographs of its receipts
 |-------|-------|
 | Model | `App\Models\Transaction` — the only `InteractsWithMedia` model here |
 | Direction | `App\Enums\TransactionType` — `income` / `expense` |
+| Amounts | `App\Rules\WholeRupiah` — the only validation on the figure, and the grouped display |
 | Totals | `Resources/Transactions/Widgets/TransactionOverview` |
 | Receipts | media collection `Transaction::RECEIPTS`, private `local` disk |
 
@@ -222,9 +223,9 @@ which cannot represent `0.1` exactly, so totals drift once the numbers get large
 spent in fractions, so integer rupiah removes the problem rather than managing it. Two
 consequences that are easy to undo by accident:
 
-- The form sets `->integer()->step(1)`, and that guard is the only thing catching a fractional
-  amount. SQLite is loosely typed: a `1500.75` reaching an INTEGER-affinity column is stored as
-  a real, raises nothing, and comes back as `1500` once the model's `integer` cast has run.
+- `App\Rules\WholeRupiah` on the form field is the only thing catching a fractional amount.
+  SQLite is loosely typed: a `1500.75` reaching an INTEGER-affinity column is stored as a real,
+  raises nothing, and comes back as `1500` once the model's `integer` cast has run.
   `test_a_fractional_amount_reaching_the_model_is_lost_quietly` pins that behaviour so the
   reason for the guard survives a refactor of the form.
 - The table and infolist format with `number_format($state, 0, ',', '.')` rather than
@@ -234,6 +235,45 @@ consequences that are easy to undo by accident:
 
 `unsigned` is deliberate too: direction lives in `type`, so a negative expense would make the
 same row readable two ways.
+
+**The field shows `1.500.000` and stores `1500000`.** Three pieces do that, and removing any one
+of them breaks it without an error:
+
+| Piece | Does |
+|-------|------|
+| `->live(onBlur: true)` with `afterStateUpdated()` | regroups what was typed, once the field loses focus |
+| `->formatStateUsing()` | groups the stored integer when an existing row is opened for editing |
+| `->dehydrateStateUsing()` | strips the separators on the way back into the column |
+
+Four things that look like the answer and are not:
+
+- **`->numeric()` and `->integer()`.** Both make `TextInput::getType()` return `number`, and a
+  number input will not display a thousands separator — the browser rejects `1.500.000` and
+  leaves the field blank. Dropping them also drops the `integer`, `min` and `max` rules they
+  registered, which is the whole reason `App\Rules\WholeRupiah` exists.
+- **`->mask(RawJs::make('$money(…)'))`.** Filament v5 bundles no Alpine mask plugin, so the
+  `x-mask` attribute is rendered and nothing implements it. See Filament conventions.
+- **`->stripCharacters('.')`.** Filament applies it in `mutateStateForValidation()` and *not* in
+  `mutateDehydratedState()`, so on its own it lets `1500.75` validate as `150075` and then
+  stores that.
+- **Stripping dots in `afterStateUpdated()`.** A dot separates thousands in `1.500.000` and
+  decimals in `1500.75`. Only what `WholeRupiah::isUnambiguous()` accepts is regrouped; anything
+  else is left exactly as typed so the rule can refuse it. Regrouping it instead would turn
+  Rp 1.500,75 into Rp 150.075 — an error nothing downstream can catch, because the result is a
+  perfectly valid integer.
+
+**What counts as ambiguous is narrower than "badly grouped", and deliberately so.** The rule
+asks one question: *could this be a decimal?* Only `WholeRupiah::DECIMAL_TAIL` — a dot with one
+or two digits at the very end — could be. Everything else that is digits-and-dots is regrouped
+however untidy it arrived.
+
+That matters because the field reformats itself. Typing one more digit onto an
+already-grouped `10.000` gives `10.0000`, which is not valid grouping but cannot mean anything
+except `100.000`. An earlier version demanded tidy groups of three and put a validation error
+under the field while the user was still typing — the feature fighting its own output.
+`test_a_digit_appended_to_a_grouped_amount_is_regrouped_not_refused` is what keeps that from
+coming back, and `test_an_ambiguous_amount_is_not_quietly_regrouped` guards the other edge.
+`WholeRupiahTest` holds the full accepted/refused table.
 
 **`occurred_at` is not `created_at`.** It defaults to `now()` when the form opens — which is
 what "waktu saat dibuat" asks for — but stays editable, because a receipt found a week later
@@ -799,6 +839,21 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   column stored in minor units. It also renders two decimal places unless given
   `decimalPlaces: 0`, and it cannot prefix a sign, which is why Keuangan formats amounts with
   `number_format()` instead.
+- **`TextInput::mask()` does nothing here.** Filament v5's Alpine build registers `float`,
+  `load-css`, `load-js`, `sortable` and `tooltip` as directives and `float` / `tooltip` as
+  magics — there is no `mask` directive and no `$money` magic, and no asset registers them.
+  `mask()` still renders `x-mask` (or `x-mask:dynamic`), so the widely-quoted
+  `->mask(RawJs::make('$money($input)'))` produces an attribute nothing reads: no error, no
+  formatting. Either format server-side on `->live(onBlur: true)` the way Keuangan does, or
+  register `@alpinejs/mask` as a panel asset first — Filament's own assets are gitignored and
+  rebuilt by `filament:assets`, so that is a build-pipeline decision, not a one-liner.
+- **`->numeric()` and `->integer()` force `type="number"`**, through `TextInput::getType()`.
+  A number input cannot show a grouped value, so any field that formats its own state has to
+  drop both — and with them go the `numeric` / `integer` / `min` / `max` rules they registered.
+  Replace them explicitly or the field ends up with no validation at all.
+- **`->stripCharacters()` is validation-only.** `TextInput::mutateStateForValidation()` applies
+  it; `mutateDehydratedState()` does not. What is *stored* is the unstripped state, so pair it
+  with `->dehydrateStateUsing()` — or the rules see one value and the column receives another.
 - An action that weakens someone else's security should ask for the actor's **own** password:
   `TextInput::make('password')->password()->required()->currentPassword()`.
   `->requiresConfirmation()` stops a misclick; it does not stop a passer-by at an unlocked
@@ -814,7 +869,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 ## Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-108 tests at the last count.
+140 tests at the last count.
 
 | File | Locks in |
 |------|----------|
@@ -826,8 +881,9 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 | `UserMonitoringTest` | package routes stay gone, panel middleware coverage, delete auditing |
 | `MonitoringRetentionTest` | retention saves, blank means forever, prune scope and summary |
 | `TwoFactorAuthenticationTest` | password alone is refused, valid code passes, secret never leaks, three audit events, admin reset |
-| `TransactionResourceTest` | policy gating, integer rupiah and what a fractional amount costs, `occurred_at` default, receipts stay private and unsigned reads are refused, receipt / cascade / bulk delete auditing |
+| `TransactionResourceTest` | policy gating, integer rupiah and what a fractional amount costs, grouped input round-trips and an ambiguous one is left alone, `occurred_at` default, receipts stay private and unsigned reads are refused, receipt / cascade / bulk delete auditing |
 | `PageViewsOnlyTest` (Unit) | which requests count as a visit |
+| `WholeRupiahTest` (Unit) | which amounts are whole rupiah, that untidy grouping is accepted, and that `1500.75` is refused rather than regrouped |
 
 **`Storage::fake()` cannot test signed URLs.** It replaces the disk's temporary-URL builder with
 a stub returning `URL::to($path.'?expiration=…')` — no signature, no `/storage` prefix — so a

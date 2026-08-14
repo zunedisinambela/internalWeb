@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\TransactionType;
 use App\Filament\Resources\Transactions\Pages\CreateTransaction;
+use App\Filament\Resources\Transactions\Pages\EditTransaction;
 use App\Filament\Resources\Transactions\Pages\ListTransactions;
 use App\Models\Transaction;
 use Filament\Actions\Testing\TestAction;
@@ -119,6 +120,82 @@ class TransactionResourceTest extends TestCase
             ->assertHasFormErrors(['amount']);
 
         $this->assertSame(0, Transaction::query()->count());
+    }
+
+    /**
+     * The field submits what it displays, so a grouped amount has to survive
+     * the round trip. Dehydration strips the separators; nothing else does —
+     * ->stripCharacters() would not, because Filament applies it in
+     * mutateStateForValidation() and not in mutateDehydratedState().
+     */
+    public function test_an_amount_typed_with_thousands_separators_is_stored_as_an_integer(): void
+    {
+        Livewire::actingAs($this->superAdmin())
+            ->test(CreateTransaction::class)
+            ->fillForm([
+                'type' => TransactionType::Expense->value,
+                'amount' => '1.500.000',
+                'description' => 'Sewa kantor Agustus',
+                'occurred_at' => '2026-08-14 09:00:00',
+            ])
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $this->assertSame(1_500_000, Transaction::sole()->amount);
+    }
+
+    /**
+     * Leaving the field regroups it. Filament v5 ships no Alpine mask plugin,
+     * so this is a Livewire round trip rather than a client-side mask — which
+     * is what makes it assertable here at all.
+     */
+    public function test_leaving_the_amount_field_regroups_what_was_typed(): void
+    {
+        Livewire::actingAs($this->superAdmin())
+            ->test(CreateTransaction::class)
+            ->set('data.amount', '1500000')
+            ->assertSchemaStateSet(['amount' => '1.500.000'], schema: 'form');
+    }
+
+    /**
+     * Editing an already-grouped amount must not fight back. Typing one more
+     * digit onto 10.000 gives 10.0000, which is not tidy grouping but can only
+     * mean 100.000 — an earlier version refused it and put a validation error
+     * under the field while the user was still typing.
+     */
+    public function test_a_digit_appended_to_a_grouped_amount_is_regrouped_not_refused(): void
+    {
+        Livewire::actingAs($this->superAdmin())
+            ->test(CreateTransaction::class)
+            ->set('data.amount', '10.0000')
+            ->assertHasNoFormErrors()
+            ->assertSchemaStateSet(['amount' => '100.000'], schema: 'form');
+    }
+
+    /**
+     * The same input left alone, because regrouping it would be a hundredfold
+     * error rather than a formatting one: 1500.75 has a two-digit group, so it
+     * is a decimal, not a separated thousand. The rule refuses it on submit;
+     * this asserts nothing quietly "fixes" it first.
+     */
+    public function test_an_ambiguous_amount_is_not_quietly_regrouped(): void
+    {
+        Livewire::actingAs($this->superAdmin())
+            ->test(CreateTransaction::class)
+            ->set('data.amount', '1500.75')
+            ->assertSchemaStateSet(['amount' => '1500.75'], schema: 'form');
+    }
+
+    /**
+     * An amount already in the database renders grouped, not bare.
+     */
+    public function test_editing_a_transaction_shows_the_amount_grouped(): void
+    {
+        $transaction = Transaction::factory()->expense(1_500_000)->create();
+
+        Livewire::actingAs($this->superAdmin())
+            ->test(EditTransaction::class, ['record' => $transaction->getRouteKey()])
+            ->assertSchemaStateSet(['amount' => '1.500.000'], schema: 'form');
     }
 
     /**

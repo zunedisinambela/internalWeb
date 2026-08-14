@@ -4,11 +4,13 @@ namespace App\Filament\Resources\Transactions\Schemas;
 
 use App\Enums\TransactionType;
 use App\Models\Transaction;
+use App\Rules\WholeRupiah;
 use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\SpatieMediaLibraryFileUpload;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\ToggleButtons;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 
 class TransactionForm
@@ -35,16 +37,46 @@ class TransactionForm
                         TextInput::make('amount')
                             ->label('Jumlah')
                             ->prefix('Rp')
-                            ->numeric()
-                            // Whole rupiah only — the column is an integer, and
-                            // a submitted 1500.75 would otherwise be truncated
-                            // on the way in without telling anyone.
-                            ->step(1)
-                            ->integer()
-                            ->minValue(1)
-                            ->maxValue(999999999999)
+                            // Neither ->numeric() nor ->integer(): both make
+                            // getType() return "number", and a number input
+                            // cannot render a thousands separator — the browser
+                            // rejects "1.500.000" and shows an empty field. The
+                            // rules they used to register live in WholeRupiah
+                            // instead, so dropping them costs no validation.
+                            ->inputMode('numeric')
+                            ->maxLength(19)
                             ->required()
-                            ->helperText('Dalam rupiah penuh, tanpa titik atau koma.'),
+                            ->rule(new WholeRupiah)
+                            // Regroups on blur rather than per keystroke.
+                            // Filament v5 does not bundle Alpine's mask plugin
+                            // — no directive("mask"), no magic("money") in its
+                            // Alpine build — so ->mask(RawJs::make('$money(…)'))
+                            // renders an attribute nothing implements and
+                            // silently does nothing. A blur costs one Livewire
+                            // round trip and is testable from PHPUnit, which
+                            // a client-side mask would not be.
+                            ->live(onBlur: true)
+                            ->afterStateUpdated(static function (Set $set, mixed $state): void {
+                                // Regroups anything that can only be read one
+                                // way, however untidy — "10.0000" is what an
+                                // already-formatted 10.000 becomes when one more
+                                // digit is typed, and it plainly means 100.000.
+                                // "1500.75" is left exactly as typed instead:
+                                // stripping its dot would silently turn
+                                // Rp 1.500,75 into Rp 150.075, so the rule above
+                                // has to be the one that refuses it.
+                                if (! WholeRupiah::isUnambiguous($state)) {
+                                    return;
+                                }
+
+                                $set('amount', WholeRupiah::format($state));
+                            })
+                            // The column stores a bare integer; the field shows
+                            // it grouped. These two are inverses, and both go
+                            // through WholeRupiah so they cannot drift apart.
+                            ->formatStateUsing(static fn (mixed $state): ?string => WholeRupiah::format($state))
+                            ->dehydrateStateUsing(static fn (mixed $state): ?int => WholeRupiah::toInteger($state))
+                            ->helperText('Rupiah penuh, tanpa sen. Titik ribuan ditata otomatis.'),
 
                         // Defaults to the moment the form is opened, which is
                         // what "waktu saat dibuat" means in practice. It stays
