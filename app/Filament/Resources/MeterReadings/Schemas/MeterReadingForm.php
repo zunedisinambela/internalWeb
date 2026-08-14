@@ -101,13 +101,14 @@ class MeterReadingForm
                             // on every reading invites a typo into the one figure
                             // the tenant is billed by.
                             //
-                            // On the edit screen too, deliberately. The cost is
-                            // that a rate typed wrong is no longer correctable
-                            // from the panel — it has to be fixed from tinker, or
-                            // by removing the reading and recording it again. That
-                            // trade was made knowingly: entering a reading is a
-                            // frequent act and correcting a rate is a rare one, so
-                            // the field earns its place on neither screen.
+                            // On the edit screen too, deliberately: entering a
+                            // reading is a frequent act and correcting a rate is a
+                            // rare one, so a field that is wrong to ask for while
+                            // recording does not become right to ask for while
+                            // correcting. A rate typed wrong is fixed by
+                            // Actions\RefreshRateAction instead, which refills it
+                            // from the tariff that was in force when the period
+                            // closed.
                             //
                             // It appears on exactly one path: no tariff exists, so
                             // there is nothing to copy and the column is NOT NULL.

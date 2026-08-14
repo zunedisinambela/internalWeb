@@ -432,6 +432,7 @@ Every room is metered separately, so every room is billed separately. Three scre
 | Reading | `App\Models\MeterReading`, `/meter-readings` |
 | Photos | media collections `MeterReading::PHOTOS_START` / `::PHOTOS_END`, private `local` disk |
 | Amounts | `App\Rules\WholeRupiah` on the rate, the same rule the cash book uses |
+| Correction | `Resources/MeterReadings/Actions/RefreshRateAction` — the one way a recorded rate moves |
 
 **The rate is copied onto the reading, never joined to.** `meter_readings.rate` is a snapshot of
 `electricity_tariffs` taken when the reading is recorded, and it is the load-bearing decision of
@@ -460,13 +461,38 @@ It appears on **one** path: no tariff exists, so there is nothing to copy and `r
 That is the same escape hatch the warning `Callout` announces, and it is why the field keeps its
 `->default()`, its `WholeRupiah` rule and its grouped-input round trip.
 
-**The cost is that a rate typed wrong is not correctable from the panel**, and that is accepted
-rather than overlooked. It has to be fixed from tinker, or by deleting the reading and recording
-it again. Showing the field on the edit screen only — the obvious middle ground — was tried and
-dropped: entering a reading is a frequent act and correcting a rate is a rare one, so a field
-that is wrong to ask for while recording does not become right to ask for while correcting.
-`rate` stays on the `LogsActivity` allowlist regardless, so a fix made from tinker is still
-audited; it is the one column here whose value came from somewhere else.
+Showing the field on the edit screen only — the obvious middle ground — was tried and dropped:
+entering a reading is a frequent act and correcting a rate is a rare one, so a field that is
+wrong to ask for while recording does not become right to ask for while correcting. `rate` stays
+on the `LogsActivity` allowlist regardless; it is the one column here whose value came from
+somewhere else, so a fix made from tinker is still audited.
+
+**A rate typed wrong is corrected by a button, not by the field.**
+`Resources/MeterReadings/Actions/RefreshRateAction` refills one reading's rate from the tariff
+row, on the edit screen only. It is the same escape hatch `RefreshPricesAction` is for a sale,
+and it exists for the same reason: the snapshot is not negotiable, so an honest mistake — a
+reading entered before the tariff screen was filled in, or one recorded while the tariff itself
+carried a typo — needs a way out that is not tinker. The four properties that keep it a
+correction rather than the automatic recalculation the snapshot forbids are the ones listed
+under Oriflame: asked for, shows what it would move, writes into the open form without saving,
+and hides itself when the stored rate already matches.
+
+**It takes the tariff in force at `end_read_at`, not the newest one.** That is the single place
+it differs from the sales action, and the difference is forced by the data: product prices are
+not versioned, so "the current price" is the only answer there, while tariffs are. A July
+reading corrected in August therefore has two candidate rates, and the newest is the wrong one
+— copying August's rate onto a July bill is exactly the repricing the snapshot exists to
+prevent, arriving through a button instead of through a join.
+`test_the_rate_refresh_takes_the_tariff_in_force_when_the_period_closed` is what keeps it.
+The date is read from `$livewire->data['end_read_at']` rather than from the row, so a correction
+that also moves the closing moment offers the tariff for the date being saved. A reading that
+closed before any tariff took effect has nothing to copy, so the button is simply absent.
+
+The confirmation names both rates **and the bill each produces**, which matters more here than
+on a sale: the rate field is hidden, so the `Perhitungan` total is the only thing on screen that
+moves when the action fires, and it is what the user checks before Simpan. The tariff's `note`
+is user text interpolated into an `HtmlString`, so it goes through `e()` — same trap as the
+product name in `RefreshPricesAction`.
 
 **`->dehydratedWhenHidden()` is what makes hiding it safe, and its absence is silent.** Filament
 does not dehydrate a hidden component: `isDehydrated()` returns false through
@@ -653,6 +679,13 @@ snapshot forbids:
 | shows every line it would move, both figures, before confirming | "nothing changes" and "four lines change" must not be the same click |
 | writes into the open form and **does not save** | Simpan is the user's; the `sale_item` audit entries then come from `LogsActivity` on the ordinary path, exactly as a hand correction would |
 | hidden when every price already matches | the button's absence answers "are my prices current?" without opening a modal that says no |
+
+**Those four properties are the pattern, not a detail of this feature.** Every copied figure in
+this project needs the same escape hatch, and `Listrik kost`'s `RefreshRateAction` is the second
+one built to this shape — so when a third snapshot appears, copy the properties rather than
+inventing a third answer. What legitimately varies is *which* figure is offered: prices are not
+versioned, so there is one candidate, while tariffs are, so the meter version has to pick by
+date. See Listrik kost.
 
 It operates on `$livewire->data`, not on the rows. Writing rows directly would be fewer lines,
 skip the form's own validation, and silently discard whatever else was already typed on the
@@ -1298,7 +1331,10 @@ So the trap is narrow and specific: reaching for `HtmlString` to get a list or a
 description, and carrying a user value in with it. Returning a plain string needs nothing.
 `RefreshPricesAction` is the worked example — it builds a `<ul>` of product names and runs each
 through `e()` — and `test_the_confirmation_lists_what_would_change_and_escapes_the_product_name`
-is what keeps that from being quietly dropped.
+is what keeps that from being quietly dropped. `RefreshRateAction` hit the same trap from a
+different direction: its confirmation carries a *tariff note*, which is user text arriving from a
+table nobody thinks of as user input. Both have a test asserting the escape, because the escape
+is one call that reviews cleanly whether it is there or not.
 
 **Policies for vendor models are not auto-discovered.** Laravel maps `App\Models\X` to
 `App\Policies\XPolicy`. `Activity` lives in a vendor namespace, so `ActivityPolicy` is
@@ -1540,7 +1576,17 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   iterate the array instead. Write values in the shape the field *holds* (a `RupiahInput` holds
   a grouped string, not an integer). `RefreshPricesAction` is the worked example, and
   `test_refreshing_prices_fills_the_form_without_saving` is what keeps it from quietly becoming
-  a direct write.
+  a direct write. `RefreshRateAction` is the same shape onto a single scalar field
+  (`data['rate']`) instead of a repeater, and it also *reads* from `$livewire->data` — the
+  closing moment it picks a tariff by is whatever the form currently holds, not what the row
+  holds, so a correction that moves the date and the rate together stays consistent.
+- **A field hidden from the form is still reachable from `$livewire->data`**, and that is what
+  makes a hidden column correctable at all. `MeterReading::$rate` is hidden on both form screens
+  yet `->dehydratedWhenHidden()`, so an action can write it and the ordinary Simpan commits it.
+  The catch is that the user cannot see the field move: something else on screen has to be the
+  evidence. `RefreshRateAction` leans on the `Perhitungan` total, which is a `TextEntry` reading
+  `$get('rate')` and therefore re-renders with the new figure — and the confirmation names the
+  bill before and after rather than only the rate, because the rate alone is not checkable.
 - **A grouped rupiah field is `App\Filament\Forms\Components\RupiahInput`.** It assembles the
   `->live(onBlur)` / `->formatStateUsing()` / `->dehydrateStateUsing()` trio that has to travel
   together — losing the last one stores `"1.500.000"` into an INTEGER column, which SQLite
@@ -1563,8 +1609,9 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   **More than one mount point is sufficient reason, not the only one.** An action carrying real
   logic — a built-out confirmation, a state diff, a notification — belongs in its own class from
   the first mount, so the page class stays a list of what is on the page.
-  `RefreshPricesAction` is mounted once and is a class for that reason; a `getHeaderActions()`
-  holding sixty lines of price arithmetic is where a page stops being readable.
+  `RefreshPricesAction` and `RefreshRateAction` are each mounted once and are classes for that
+  reason; a `getHeaderActions()` holding sixty lines of price arithmetic is where a page stops
+  being readable.
 - **A media component repeated per collection belongs in a private factory method** on the schema
   or table class, not typed out twice. `MeterReadingForm`, `MeterReadingsTable` and
   `MeterReadingInfolist` each build both of their photo components from one `photos()` helper.
@@ -1605,7 +1652,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 ## Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-261 tests at the last count.
+267 tests at the last count.
 
 | File | Locks in |
 |------|----------|
@@ -1621,7 +1668,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 | `TransactionExportTest` | who may download the book, the two-column ledger and its running balance, chronological order regardless of the table sort, filters carry over, amounts and dates are values rather than text, `0` prints while a blank side stays empty, both formats download and audit under one event, the PDF escapes user text and signs a negative balance readably, an empty book still renders |
 | `RoomResourceTest` | policy gating, a room with readings cannot be deleted from the resource *or* the database, deactivation keeps its readings, latest-reading ordering and its `id` tiebreak, occupant changes audited, bulk delete audited per row |
 | `ElectricityTariffTest` | policy gating, the rate in force is the latest that has started, a scheduled rate stays out until its date, an empty table has no rate, two tariffs cannot share a date, author stamped, grouped input round-trips, rate changes audited |
-| `MeterReadingResourceTest` | policy gating, usage and total derived from stored figures, **a later tariff does not change a recorded reading**, the rate field is hidden on both form screens yet still copied onto the row, shown only when there is no tariff, editing does not re-copy the current tariff, the form prefills the rate in force and both ends of the previous reading, a room with no history keeps the default opening moment, a closing figure below the opening one is refused, a closing moment before the opening one is refused while an equal one is accepted, author stamped, both reading moments default to now, the create button waits for a room, a photo belongs to the end it was uploaded against, photos stay private and unsigned reads are refused, photo / cascade / bulk delete auditing |
+| `MeterReadingResourceTest` | policy gating, usage and total derived from stored figures, **a later tariff does not change a recorded reading**, the rate field is hidden on both form screens yet still copied onto the row, shown only when there is no tariff, editing does not re-copy the current tariff, **the refresh-rate button fills the form without saving** and only commits through Simpan, takes the tariff in force when the period closed rather than the newest one, hides itself when the rate already matches or no tariff had taken effect, and escapes the tariff note in its confirmation, the form prefills the rate in force and both ends of the previous reading, a room with no history keeps the default opening moment, a closing figure below the opening one is refused, a closing moment before the opening one is refused while an equal one is accepted, author stamped, both reading moments default to now, the create button waits for a room, a photo belongs to the end it was uploaded against, photos stay private and unsigned reads are refused, photo / cascade / bulk delete auditing |
 | `SaleResourceTest` | policy gating, the three totals derived from the lines, **a later price change does not reprice a recorded sale**, editing does not re-copy current prices, picking a product copies both prices onto the line, grouped input round-trips, a duplicate product line is refused, a marketing price above the catalogue price is refused, author stamped, the date defaults to now, the create button waits for a customer *and* a product, the cascade removes the lines and writes one entry, line price corrections audited, nothing outside either allowlist is logged, the view screen renders its repeatable entry, **the refresh-prices button fills the form without saving** and only commits through Simpan, hides itself when prices already match, and escapes the product name in its confirmation |
 | `ProductResourceTest` | policy gating, the unit margin derived from the two prices, a negative margin reported rather than clamped, grouped input round-trips, a marketing price above the catalogue price is refused while an equal one is accepted, a fractional price is refused, price changes audited, a sold product cannot be deleted from the resource *or* the database, deactivation keeps its lines |
 | `CustomerResourceTest` | policy gating, totals summed across every sale, a customer with no sales totals zero, a customer with sales cannot be deleted from the resource *or* the database, deactivation keeps their sales, phone changes audited, bulk delete audited per row |

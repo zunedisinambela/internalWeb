@@ -214,6 +214,170 @@ class MeterReadingResourceTest extends TestCase
     }
 
     /**
+     * The escape hatch from the snapshot, and the assertion that it stays one:
+     * the action fills the open form and writes nothing. Closing the page without
+     * saving has to leave the bill exactly as it was.
+     *
+     * The rate field is hidden here, so the form state is the only place the new
+     * figure is visible at all — which is why it is what gets asserted.
+     */
+    public function test_refreshing_the_rate_fills_the_form_without_saving(): void
+    {
+        ElectricityTariff::factory()->rate(1_500, '2026-07-01')->create();
+
+        // Recorded at a rate that was simply wrong — the case the snapshot
+        // deliberately leaves unserved, and this button exists for.
+        $reading = MeterReading::factory()->usage(100, rate: 1_200)
+            ->create(['end_read_at' => '2026-07-20 09:00:00']);
+
+        Livewire::actingAs($this->superAdmin())
+            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
+            ->callAction('refreshRate')
+            // Grouped, because that is the shape the field holds.
+            ->assertSchemaStateSet(['rate' => '1.500'], schema: 'form');
+
+        // The row still holds what it was recorded at.
+        $this->assertSame(1_200, $reading->fresh()->rate);
+        $this->assertSame(120_000, $reading->fresh()->total_amount);
+    }
+
+    /**
+     * The other half: Simpan is what commits it, through the ordinary save path
+     * — so the correction lands in `meter_reading` the same way a rate fixed from
+     * tinker would, rather than moving a bill with nothing to show for it.
+     */
+    public function test_saving_after_a_rate_refresh_commits_it_and_audits_it(): void
+    {
+        ElectricityTariff::factory()->rate(1_500, '2026-07-01')->create();
+
+        $reading = MeterReading::factory()->usage(100, rate: 1_200)
+            ->create(['end_read_at' => '2026-07-20 09:00:00']);
+
+        Activity::query()->delete();
+
+        Livewire::actingAs($this->superAdmin())
+            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
+            ->callAction('refreshRate')
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        $reading->refresh();
+
+        $this->assertSame(1_500, $reading->rate);
+        $this->assertSame(150_000, $reading->total_amount);
+
+        $entry = Activity::query()->where('log_name', 'meter_reading')->latest('id')->first();
+
+        $this->assertNotNull($entry, 'A correction made this way has to be audited like any other.');
+        $this->assertSame(1_200, $entry->attribute_changes['old']['rate']);
+        $this->assertSame(1_500, $entry->attribute_changes['attributes']['rate']);
+    }
+
+    /**
+     * The one place this deliberately differs from the sales action it copies.
+     *
+     * Product prices are not versioned, so "the current price" is the only answer
+     * there. Tariffs are, so a July reading corrected in August has two candidate
+     * rates — and the newest one is the wrong one. Taking August's rate onto a
+     * July bill is exactly the repricing the snapshot exists to prevent, arriving
+     * through a button instead of through a join.
+     */
+    public function test_the_rate_refresh_takes_the_tariff_in_force_when_the_period_closed(): void
+    {
+        Carbon::setTestNow('2026-08-14 15:00:00');
+
+        ElectricityTariff::factory()->rate(1_500, '2026-07-01')->create();
+        ElectricityTariff::factory()->rate(2_000, '2026-08-01')->create();
+
+        $reading = MeterReading::factory()->usage(100, rate: 1_200)
+            ->create(['end_read_at' => '2026-07-20 09:00:00']);
+
+        Livewire::actingAs($this->superAdmin())
+            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
+            ->callAction('refreshRate')
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        // July's rate, not today's.
+        $this->assertSame(1_500, $reading->fresh()->rate);
+        $this->assertSame(2_000, ElectricityTariff::currentRate());
+    }
+
+    /**
+     * The button answers "is this bill on the right tariff?" by being absent. A
+     * modal that opens only to say nothing would change is a worse answer than no
+     * button — and here it matters more than on a sale, because the rate field is
+     * hidden and the modal is the only place the figure is ever shown.
+     */
+    public function test_the_rate_refresh_button_is_hidden_when_the_rate_already_matches(): void
+    {
+        ElectricityTariff::factory()->rate(1_500, '2026-07-01')->create();
+
+        $reading = MeterReading::factory()->usage(100, rate: 1_500)
+            ->create(['end_read_at' => '2026-07-20 09:00:00']);
+
+        $admin = $this->superAdmin();
+
+        Livewire::actingAs($admin)
+            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
+            ->assertActionHidden('refreshRate');
+
+        $reading->update(['rate' => 1_200]);
+
+        Livewire::actingAs($admin)
+            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
+            ->assertActionVisible('refreshRate');
+    }
+
+    /**
+     * A reading closed before any tariff was ever set has nothing to copy from.
+     * Falling back to the earliest or the newest rate would put a figure onto a
+     * bill that no tariff row can account for.
+     */
+    public function test_the_rate_refresh_button_is_hidden_when_no_tariff_had_taken_effect_yet(): void
+    {
+        ElectricityTariff::factory()->rate(1_500, '2026-08-01')->create();
+
+        $reading = MeterReading::factory()->usage(100, rate: 1_200)
+            ->create(['end_read_at' => '2026-07-20 09:00:00']);
+
+        Livewire::actingAs($this->superAdmin())
+            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
+            ->assertActionHidden('refreshRate');
+    }
+
+    /**
+     * The confirmation is what makes this a correction rather than a silent
+     * rewrite. It has to name both rates and the bill they produce, because the
+     * rate field is hidden — the total is the only thing the user can check.
+     *
+     * A tariff note is typed by a user and the modal body is rendered as HTML, so
+     * it is escaped.
+     */
+    public function test_the_rate_refresh_confirmation_names_both_rates_and_escapes_the_tariff_note(): void
+    {
+        ElectricityTariff::factory()->rate(1_500, '2026-07-01')
+            ->create(['note' => 'Naik & <b>disesuaikan</b> PLN']);
+
+        $reading = MeterReading::factory()->usage(100, rate: 1_200)
+            ->create(['end_read_at' => '2026-07-20 09:00:00']);
+
+        $description = (string) Livewire::actingAs($this->superAdmin())
+            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
+            ->instance()
+            ->getAction('refreshRate')
+            ->getModalDescription();
+
+        $this->assertStringContainsString('Rp 1.200', $description);
+        $this->assertStringContainsString('Rp 1.500', $description);
+        // The bill before and after, which is what the correction actually moves.
+        $this->assertStringContainsString('Rp 120.000', $description);
+        $this->assertStringContainsString('Rp 150.000', $description);
+        $this->assertStringContainsString('Naik &amp; &lt;b&gt;disesuaikan&lt;/b&gt; PLN', $description);
+        $this->assertStringNotContainsString('<b>disesuaikan</b>', $description);
+    }
+
+    /**
      * The opening figure is the previous reading's closing figure. That is what
      * makes the two numbers one continuous meter rather than two unrelated
      * fields nobody can check.
