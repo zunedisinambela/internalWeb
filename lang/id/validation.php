@@ -193,6 +193,11 @@ return [
         'visit_retention_days' => 'penyimpanan kunjungan',
         'authentication_retention_days' => 'penyimpanan riwayat masuk',
         'activity_retention_days' => 'penyimpanan log aktivitas',
+        'type' => 'jenis',
+        'amount' => 'jumlah',
+        'description' => 'keterangan',
+        'occurred_at' => 'tanggal dan waktu',
+        'receipts' => 'bukti',
     ],
 
 ];

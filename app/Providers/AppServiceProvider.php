@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Listeners\LogRoleChange;
+use App\Models\Transaction;
 use App\Models\User;
 use App\Policies\ActivityPolicy;
 use Illuminate\Support\Carbon;
@@ -12,6 +13,7 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 use Spatie\Activitylog\Models\Activity;
+use Spatie\MediaLibrary\MediaCollections\Models\Media;
 use Spatie\Permission\Events\RoleAttachedEvent;
 use Spatie\Permission\Events\RoleDetachedEvent;
 
@@ -34,7 +36,51 @@ class AppServiceProvider extends ServiceProvider
         $this->registerVendorModelPolicies();
         $this->registerLogViewerGate();
         $this->registerRoleChangeAuditing();
+        $this->registerReceiptDeletionLogging();
         $this->registerActivityDeletionLogging();
+    }
+
+    /**
+     * Records every receipt image removed from a transaction.
+     *
+     * A receipt is the evidence for the amount next to it, so removing one is a
+     * meaningful edit to the record even though the row itself does not change.
+     * LogsActivity on Transaction cannot see it: media is a relation, not a
+     * column. This is the same split LogRoleChange makes for roles.
+     *
+     * Hooked on the Media model rather than on the Filament form, so it also
+     * covers a removal made from tinker or a console command. Media is a vendor
+     * class with no App\Models subclass, so the listener is registered here by
+     * hand — the same reason ActivityPolicy is.
+     *
+     * Deleting a whole transaction fires this once per attached file on top of
+     * the row's own `deleted` entry. That duplication is wanted: a receipt
+     * removed on its own and a receipt that went down with its transaction are
+     * different events, and the log should not have to infer which happened.
+     *
+     * The blind spot is a query builder delete on the media table, which fires
+     * no model events — the same one the monitoring screens close by pinning
+     * every DeleteBulkAction to ->fetchSelectedRecords().
+     */
+    protected function registerReceiptDeletionLogging(): void
+    {
+        Media::deleted(function (Media $media): void {
+            if ($media->model_type !== Transaction::class) {
+                return;
+            }
+
+            activity('transaction')
+                ->performedOn($media->model)
+                ->event('receipt_deleted')
+                ->withProperties([
+                    'media_id' => $media->getKey(),
+                    'file_name' => $media->file_name,
+                    'collection' => $media->collection_name,
+                    'size' => $media->size,
+                    'transaction_id' => $media->model_id,
+                ])
+                ->log('Bukti transaksi dihapus');
+        });
     }
 
     /**
