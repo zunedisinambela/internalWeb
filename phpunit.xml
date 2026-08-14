@@ -18,6 +18,17 @@
         </include>
     </source>
     <php>
+        <!--
+            PHP's own default is 128M, and the whole suite runs in one process.
+            TransactionExportTest builds real xlsx files through phpspreadsheet
+            and zipstream, which is the heaviest thing here by a wide margin, and
+            it began exhausting that ceiling once the suite passed roughly two
+            hundred tests. The failure is a fatal error inside zipstream with no
+            assertion attached, so it reads as a broken export rather than as a
+            memory limit — worth raising deliberately instead of leaving for
+            whoever adds the next test file to rediscover.
+        -->
+        <ini name="memory_limit" value="512M"/>
         <env name="APP_ENV" value="testing"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>

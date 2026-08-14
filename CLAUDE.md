@@ -19,18 +19,34 @@ php artisan storage:link           # NOT part of `composer setup` — see Media
 
 - **Laravel 13**, framework `^13.17`. Several APIs differ from Laravel 10/11 docs — check
   `vendor/laravel/framework` before trusting an older recipe.
-- **Filament v5** (`^5.0`) at `/admin`. Panel config lives entirely in
+- **Filament v5** (`^5.0`) mounted at the **root path** — `->path('')`, so `/` is the
+  dashboard, `/login` the sign-in screen and `/transactions` the cash book, with no `/admin`
+  segment anywhere. Panel config lives entirely in
   `app/Providers/Filament/AdminPanelProvider.php`, registered via `bootstrap/providers.php`.
+  The panel id stays `admin`, so route names are still `filament.admin.*` — the id names the
+  panel, not the URL, and renaming it would break every `route()` call and Shield's panel
+  flag while changing no path. Three consequences of the empty path:
+  - `routes/web.php` must define **no** route for `/`, or it races the dashboard for the same
+    path. The file is deliberately empty.
+  - A new resource slug now shares one namespace with `/log-viewer`, `/storage/{path}`,
+    `/up`, `/login` and `/logout`. Check `php artisan route:list` when adding one instead of
+    assuming a prefix keeps them apart — a slug of `storage` or `login` would collide in
+    silence.
+  - Nothing redirects the old `/admin/...` URLs; they 404. Adding
+    `Route::redirect('/admin/{any?}', '/')` would bring the segment back for bookmarks, and
+    was left out on purpose.
 - **spatie/laravel-activitylog v5** — audit trail in the `activity_log` table, browsable at
-  `/admin/activities`.
+  `/activities`.
 - **opcodesio/log-viewer v3** — log file browser at `/log-viewer`, outside the Filament panel.
 - **bezhansalleh/filament-shield v4** on **spatie/laravel-permission v8** — roles and
-  permissions, managed at `/admin/shield/roles`.
-- **binafy/laravel-user-monitoring v1** — page views and sign-in history, at `/admin/visits`
-  and `/admin/authentications`. Installed as a data collector only; its own routes and Blade
+  permissions, managed at `/shield/roles`.
+- **binafy/laravel-user-monitoring v1** — page views and sign-in history, at `/visits`
+  and `/authentications`. Installed as a data collector only; its own routes and Blade
   dashboards are disabled. See Monitoring.
 - **spatie/laravel-medialibrary v11** — file attachments on Eloquent models, `media` table.
-  Used by `App\Models\Transaction` for receipt images, on the private `local` disk.
+  Two models, three collections: `App\Models\Transaction` for receipt images, and
+  `App\Models\MeterReading` for meter photographs under a collection per meter figure. All on
+  the private `local` disk.
   v11, not v12: spatie backported `illuminate ^13` into the v11 line, while v12 is unreleased
   and requires `php ^8.4` against this project's `^8.3` pin. See Media.
 - **filament/spatie-laravel-media-library-plugin v5.7** — the upload field, image column and
@@ -47,7 +63,11 @@ php artisan storage:link           # NOT part of `composer setup` — see Media
 - Frontend: Vite 8 + Tailwind 4. Filament ships its own compiled CSS/JS and does not go
   through the app's Vite build.
 - **Two-factor is Filament's own**, not a package — `pragmarx/google2fa-qrcode` and
-  `bacon/bacon-qr-code` arrive as Filament dependencies. Opt-in per user. See Access control.
+  `chillerlan/php-qrcode` v5 arrive as Filament dependencies (`filament/filament` requires the
+  latter directly). Opt-in per user. See Access control. Note `bacon/bacon-qr-code` is **not**
+  installed: google2fa-qrcode only *suggests* it, and its own note says it needs `ext-imagick`.
+  Following that suggestion would add a PHP extension to the deploy for a renderer already
+  present.
 - `laravel/pao` is installed — agent-optimized output for PHP testing tools.
 - **Indonesian UI, WIB timestamps.** See Locale and timezone — the timezone choice is not
   reversible without rewriting data.
@@ -84,9 +104,9 @@ rendering as the raw key. That also means a forgotten translation is easy to mis
 
 **What stays English on purpose:**
 
-- Activity log `event` keys (`role_granted`, `visit_deleted`, `records_pruned`,
-  `two_factor_reset`, `receipt_deleted`, `transactions_exported`), enum values stored in
-  columns (`income`, `expense` —
+- Activity log `event` keys (`role_granted`, `role_revoked`, `visit_deleted`, `sign_in_deleted`,
+  `records_pruned`, `two_factor_reset`, `receipt_deleted`, `meter_photo_deleted`,
+  `transactions_exported`), enum values stored in columns (`income`, `expense` —
   see Keuangan), role names (`super_admin`) and permission names (`Delete:Activity`).
   These are filtered on and asserted in tests. Only the human-readable description is
   translated — `LogRoleChange` and `User::booted()` both map the two separately for exactly
@@ -106,7 +126,9 @@ was dropped in favour of Shield roles so the two could not disagree.
 role opens the door; Shield policies then decide what is reachable inside. Filament checks this
 at login *and* on every request through `Http/Middleware/Authenticate.php`, so removing a
 user's last role ends a live session on the next page load. Roleless users get 403, guests are
-redirected to login.
+redirected to login. Since the panel is mounted at the root path, that check now covers the
+site rather than a `/admin` subtree: a roleless user is refused at `/` itself, and `/login` is
+the only page the app serves anonymously.
 
 **Log viewer** — the `viewLogViewer` gate in `AppServiceProvider` uses the same rule. Keep the
 two in step: raw log files expose more than the panel does, so a weaker gate here would be a
@@ -117,19 +139,20 @@ This gate is not optional: `opcodesio/log-viewer` only locks itself down when `A
 exactly `production` (`AuthorizeLogViewer` middleware checks `App::isProduction()`), so without
 it staging and every other environment serve log contents to anonymous visitors.
 
-**Receipt files** — `/storage/{path}` is the third read surface, and the only one not guarded by
-a role. It serves the private disk on a signed, expiring URL, so within that window the link
-works for whoever holds it, signed in or not. That is the weakest of the three gates by design;
-what it protects and what it does not are set out under Media.
+**Attached files** — `/storage/{path}` is the third read surface, and the only one not guarded
+by a role. It carries receipt photographs and meter photographs alike, serving the private disk
+on a signed, expiring URL, so within that window the link works for whoever holds it, signed in
+or not. That is the weakest of the three gates by design; what it protects and what it does not
+are set out under Media.
 
-**Managing users** — `/admin/users` (`app/Filament/Resources/Users/`) creates accounts, sets
+**Managing users** — `/users` (`app/Filament/Resources/Users/`) creates accounts, sets
 passwords and assigns roles. Since a role is what grants access, this screen is how someone
 gets into the panel at all. Note it does not restrict *which* role may be handed out: anyone
 who can reach it can grant `super_admin`, including to themselves. That is fine while only
 super admins hold `Create:User`, but a future staff role with user-management permissions
 would be able to self-promote unless the role select is constrained.
 
-**Permissions** — Shield generated 73 permissions named `Action:Subject` (`ViewAny:Activity`).
+**Permissions** — Shield generated 109 permissions named `Action:Subject` (`ViewAny:Activity`).
 `super_admin` holds all of them and short-circuits every check through a `Gate::before` hook
 (`filament-shield.super_admin.intercept_gate`). Regenerate after adding a resource or page:
 
@@ -188,13 +211,13 @@ for someone who lost their device. Rules live on the resource
 (`UserResource::canResetTwoFactor()`), not on the button, and it asks for the **admin's own**
 password — this path skips the code check the profile page enforces, so it should not be one
 click away on an unattended session. It hides itself on your own account: the owner disables
-theirs at `/admin/profile` with a code, and an owner who has lost their device cannot reach
-`/admin/users` in the first place.
+theirs at `/profile` with a code, and an owner who has lost their device cannot reach
+`/users` in the first place.
 
 It is gated on **holding the `super_admin` role by name**, and this is the one place in the
 panel that checks a role rather than a permission. Two reasons, both deliberate:
 
-- `/admin/users` already sets passwords. Clearing the second factor is what turns that into a
+- `/users` already sets passwords. Clearing the second factor is what turns that into a
   complete account takeover, so it must not ride along with `Update:User` — a permission a
   future staff role would plausibly hold.
 - A Shield permission could not express it anyway. `Gate::before` passes every check for super
@@ -209,13 +232,14 @@ two-factor does nothing.
 
 ## Keuangan
 
-The cash book, and the one screen in this panel that exists for its own sake rather than to
-keep the others honest. `/admin/transactions` (`app/Filament/Resources/Transactions/`) records
-money in and money out, each row optionally carrying photographs of its receipts.
+The cash book. `/transactions` (`app/Filament/Resources/Transactions/`) records money in
+and money out, each row optionally carrying photographs of its receipts. It and Listrik kost are
+the two features that exist for their own sake; everything else in this panel is there to keep
+them honest.
 
 | Piece | Where |
 |-------|-------|
-| Model | `App\Models\Transaction` — the only `InteractsWithMedia` model here |
+| Model | `App\Models\Transaction` — the first `InteractsWithMedia` model here; see Listrik kost for the second |
 | Direction | `App\Enums\TransactionType` — `income` / `expense` |
 | Amounts | `App\Rules\WholeRupiah` — the only validation on the figure, and the grouped display |
 | Totals | `Resources/Transactions/Widgets/TransactionOverview` |
@@ -318,7 +342,7 @@ is only ever reached by a deliberate signed request.
 | Change | Recorded by |
 |--------|-------------|
 | `type`, `amount`, `description`, `occurred_at` | `LogsActivity`, log name `transaction` |
-| a receipt removed | `AppServiceProvider::registerReceiptDeletionLogging()`, event `receipt_deleted` |
+| a receipt removed | `AppServiceProvider::registerMediaDeletionLogging()`, event `receipt_deleted` |
 | the book downloaded, as Excel or PDF | `ExportTransactionsAction`, log name `monitoring`, event `transactions_exported`, `format` property |
 | a receipt attached or replaced | **nothing** |
 
@@ -396,17 +420,202 @@ dashboard — which is deliberately limited to `AccountWidget`, and which anyone
 can open. These figures are gated by the transaction policy, so the file stays beside the
 resource that checks it.
 
+## Listrik kost
+
+Every room is metered separately, so every room is billed separately. Three screens under one
+`Kost` navigation group, and one decision that everything else hangs off.
+
+| Piece | Where |
+|-------|-------|
+| Room | `App\Models\Room`, `/rooms` (`app/Filament/Resources/Rooms/`) |
+| Tariff | `App\Models\ElectricityTariff`, `/electricity-tariffs` |
+| Reading | `App\Models\MeterReading`, `/meter-readings` |
+| Photos | media collections `MeterReading::PHOTOS_START` / `::PHOTOS_END`, private `local` disk |
+| Amounts | `App\Rules\WholeRupiah` on the rate, the same rule the cash book uses |
+
+**The rate is copied onto the reading, never joined to.** `meter_readings.rate` is a snapshot of
+`electricity_tariffs` taken when the reading is recorded, and it is the load-bearing decision of
+the whole feature. A join would make every bill read the *current* rate, so entering a raise in
+August would silently reprice July — no row changed, nothing in `activity_log`, and a tenant's
+issued bill quietly becoming a different number. Copying it means a tariff change applies to
+what is recorded after it, which is what raising a tariff actually means.
+`test_a_later_tariff_does_not_change_a_recorded_reading` is the assertion that keeps it;
+without it the feature still passes every other test while doing the wrong thing.
+
+**The rate field is hidden on both form screens.** It is not a decision taken at the meter — it is
+set once on the tariff screen and copied — so asking for it while recording only invites a typo
+into the one figure the tenant is billed by. `MeterReadingForm::showsRate()` is the single rule,
+read by the field's `->visible()` and by the section heading, which drops "dan tarif" when the
+field is not there.
+
+**The view screen does not show it either.** `MeterReadingInfolist`'s `Tagihan` section carries
+the total alone. A rate printed beside the total reads as a sum the reader can recompute, and
+the one figure they would reach for to recompute it is today's tariff — the exact
+misunderstanding the snapshot exists to prevent. The stored rate is still reachable: it is a
+`toggleable` column on the list, hidden by default, and every change to it is on the
+`meter_reading` allowlist.
+
+It appears on **one** path: no tariff exists, so there is nothing to copy and `rate` is
+`NOT NULL`. Hiding it there would refuse the save with a message naming a field nobody can see.
+That is the same escape hatch the warning `Callout` announces, and it is why the field keeps its
+`->default()`, its `WholeRupiah` rule and its grouped-input round trip.
+
+**The cost is that a rate typed wrong is not correctable from the panel**, and that is accepted
+rather than overlooked. It has to be fixed from tinker, or by deleting the reading and recording
+it again. Showing the field on the edit screen only — the obvious middle ground — was tried and
+dropped: entering a reading is a frequent act and correcting a rate is a rare one, so a field
+that is wrong to ask for while recording does not become right to ask for while correcting.
+`rate` stays on the `LogsActivity` allowlist regardless, so a fix made from tinker is still
+audited; it is the one column here whose value came from somewhere else.
+
+**`->dehydratedWhenHidden()` is what makes hiding it safe, and its absence is silent.** Filament
+does not dehydrate a hidden component: `isDehydrated()` returns false through
+`isHiddenAndNotDehydratedWhenHidden()`, and the state path is then *removed* from the payload.
+Without the flag the column receives nothing, the save fails on a NOT NULL the form never
+mentions, and the snapshot this whole feature rests on is gone.
+`test_the_rate_is_copied_even_though_the_field_is_hidden` fills the create form without a rate
+and asserts the stored figure, which is the only way that stays caught.
+
+**The edit screen is the other half of that, and the more dangerous one.**
+`test_editing_a_reading_does_not_recopy_the_current_tariff` saves an unrelated field on a reading
+stored at 1.500 while the tariff screen has moved to 2.000, and asserts the row still reads
+1.500. A hidden field that re-copied `currentRate()` on save would reprice an issued bill while
+looking like an ordinary edit — the exact failure the snapshot exists to prevent, arriving
+through the form instead of through a join.
+
+**Tariffs are versioned, not a settings row.** A single row answers "what is the rate now"; these
+rows also answer "what was it in July", which is the question a tenant asks. Raising the price
+is a new row, never an edit. `effective_from` is **unique**: two tariffs on one day would make
+"which rate is in force" unanswerable and the tiebreak would silently become insertion order.
+A row dated ahead is how a raise is scheduled — `ElectricityTariff::current()` ignores it until
+the day arrives, which is why the status column is derived from the dates rather than stored.
+Nothing has to flip a flag at midnight, which matters because this app runs no scheduler for
+anything but retention (see Monitoring) and its absence is silent.
+
+`current()` returns **null** on an empty table and callers have to handle it. Inventing a
+default rate would put a made-up number onto a bill. The reading form deals with it by warning
+and letting the rate be typed by hand rather than refusing to open: the meter has already been
+read by then, and the figure is on a phone screen that will be gone tomorrow.
+
+**Rooms are retired, not deleted.** `meter_readings.room_id` is `restrictOnDelete` — not
+`cascade`, which would erase the billing history, and not `nullOnDelete`, because a reading
+without a room means nothing. That is different from `user_id`, where an unattributed row is
+still a true record. So `rooms.is_active` is the exit, and the rule is enforced twice on
+purpose:
+
+- `RoomResource::canDelete()` turns the refusal into a missing button instead of a
+  `QueryException`. It lives on the resource, not on the action, because Filament consults the
+  resource for the row action *and* for every record inside a bulk delete.
+- The foreign key covers tinker, a console command and anything that never asks the resource.
+  SQLite enforces it only with the `foreign_keys` pragma on, which Laravel sets by default.
+
+**kWh are whole integers, both figures.** Same reasoning as the rupiah columns under Keuangan:
+SQLite has no real `DECIMAL`, and `usage × rate` is what becomes money. Meters here read whole
+kWh, so fractions are refused outright rather than rounded silently.
+
+**`usage_kwh` and `total_amount` are derived, never stored.** They are accessors on the model, so
+they cannot disagree with the three columns they come from — a stored total would be a fourth
+number able to contradict them. The cost is that sorting on them has to be spelled out
+(`->sortable(query: …)` with an `orderByRaw`), because there is no column to order by and
+letting Filament guess would silently sort on nothing.
+
+Neither is clamped at zero. The form refuses a closing figure below the opening one, so a
+negative can only come from a row written outside it — and showing it in red is how that becomes
+visible. `max(0, …)` would render the same broken row as a plausible bill of Rp 0.
+
+**A reading is a period with two ends, and each end carries three things**: a figure, the moment
+it was read, and its own photographs. `start_kwh` / `start_read_at` / `PHOTOS_START` against
+`end_kwh` / `end_read_at` / `PHOTOS_END`. The form lays them out as two sections side by side so
+a photograph sits under the number it is evidence for; uploading one against the wrong end takes
+a deliberate mistake rather than a careless one.
+
+**Two photo collections, not one holding both.** Which photograph backs which figure is the
+whole evidentiary point — a disputed bill is settled by comparing the opening figure against the
+photograph taken when the period opened. A single collection could only express that by upload
+order, which reordering or deleting one file destroys silently.
+`collection_name` on the row is what nothing in the UI can scramble.
+`test_a_photo_belongs_to_the_end_it_was_uploaded_against` pins it.
+
+**`end_read_at` is what dates the row**, everywhere: the list sorts on it, the date filter
+matches on it, and `previousFor()` orders and scopes by it. A period is placed on the timeline by
+where it closes — ordering on `start_read_at` would let a short reading taken inside a long one
+come back as the later of the two. It also keeps the prefill from being circular, since
+`start_read_at` is what that lookup fills in and so cannot also be what scopes it.
+
+The date filter matches the closing moment **only**, never either end. A period straddling a
+month boundary belongs to the month it closed in, which is the month it is billed in; matching
+both ends would return one reading under two adjacent filters.
+
+**Both ends of the previous reading are prefilled**, which is what makes them one continuous
+meter rather than four unrelated fields: `start_kwh` from the previous `end_kwh`, `start_read_at`
+from the previous `end_read_at`. Prefilled, not locked: a replaced meter starts again from zero
+and only the person holding the photograph knows that happened.
+`MeterReading::previousFor()` is the single query behind it, and `Room::latestReading()`
+delegates to it rather than repeating the ordering — `id` is the tiebreak, for the same reason
+`CashBook` orders by it.
+
+The moment is prefilled only when there **is** a previous reading. A room being read for the
+first time keeps the `now()` default rather than having a required field blanked, which would
+read as the form breaking rather than as an empty history.
+
+`previousFor()` takes `$before` and `$excludingId` for the edit screen: without them, reopening
+a reading offers that same row as its own predecessor.
+
+**Two refusals, one on each pair.** A closing figure below the opening one (`->gte('start_kwh')`)
+is refused with a message naming the replaced-meter case, because a typo and a replaced meter
+need different handling and the form cannot tell them apart. A closing moment before the opening
+one (`->afterOrEqual('start_read_at')`) is refused because `end_read_at` dates the row — such a
+reading would sort into the wrong place forever and be offered as the predecessor of readings
+taken before it. `afterOrEqual` rather than `after`: both figures read in one visit is a real
+case, and a minute-precision picker could not tell it from a mistake anyway.
+
+**Auditing is split three ways**, the same shape as the cash book and for the same reason — no
+single mechanism can see all of it:
+
+| Change | Recorded by |
+|--------|-------------|
+| `room_id`, `start_kwh`, `start_read_at`, `end_kwh`, `end_read_at`, `rate`, `note` | `LogsActivity`, log name `meter_reading` |
+| a room's name, occupant or status | `LogsActivity`, log name `room` |
+| a rate set or changed | `LogsActivity`, log name `tariff` |
+| a photo removed, from either end | `AppServiceProvider::registerMediaDeletionLogging()`, event `meter_photo_deleted` |
+| a photo attached or replaced | **nothing** |
+
+Both photo collections write the **same** event key. Which end lost a photograph is already in
+the entry's `collection` property, which the listener writes for every owner — a second event key
+would mean remembering two of them to filter for "a meter photograph was removed".
+
+`occupant` is on the room allowlist deliberately: who was in a room when a reading was taken is
+exactly what a disputed bill turns on.
+
+**What this feature does not do yet**, each a decision rather than an omission:
+
+- **Nothing reaches the cash book.** A reading does not create a `Transaction`, automatically or
+  otherwise. Wiring it up raises questions this does not answer — what happens to the
+  transaction when the reading is edited or deleted, and whether a reading means money owed or
+  money received. Until those are settled, two independent records are honest and one linked
+  pair would be misleading.
+- **One rate for every room.** A per-room rate (an AC room costing more) needs a column on
+  `rooms` plus a fallback to the global tariff. The snapshot on the reading means adding it
+  later changes nothing already recorded.
+- **No standing charge and no minimum usage.** `total_amount` is `usage × rate` and nothing
+  else. Both are common in kost billing and both would be columns on `electricity_tariffs`, so
+  they are cheap to add — but adding them unasked would have put figures on a bill nobody
+  specified.
+- **No bill to hand the tenant.** The panel shows the total; there is no per-room PDF or
+  spreadsheet. `pdf.buku-kas` and `TransactionsExport` are the shapes to copy, and PDF and
+  Spreadsheet below record what silently goes wrong in each.
+
 ## Monitoring
 
 Three tables, three screens, one retention page. All of it is reachable only with a role, like
-the rest of `/admin`.
+the rest of the panel.
 
 | Screen | Table | Written by |
 |--------|-------|------------|
-| `/admin/visits` | `visits_monitoring` | `App\Http\Middleware\RecordVisit` |
-| `/admin/authentications` | `authentications_monitoring` | package listeners on `Login` / `Logout` |
-| `/admin/activities` | `activity_log` | `LogsActivity`, `LogRoleChange`, `activity()` calls |
-| `/admin/monitoring` | `monitoring_settings` | the retention form itself |
+| `/visits` | `visits_monitoring` | `App\Http\Middleware\RecordVisit` |
+| `/authentications` | `authentications_monitoring` | package listeners on `Login` / `Logout` |
+| `/activities` | `activity_log` | `LogsActivity`, `LogRoleChange`, `activity()` calls |
+| `/monitoring` | `monitoring_settings` | the retention form itself |
 
 **The package's own routes are disabled, and must stay that way.**
 `binafy/laravel-user-monitoring` registers six routes under `/user-monitoring` — three Blade
@@ -419,17 +628,23 @@ former exists, so **that file is deliberately empty** and deleting it brings all
 
 **Config deviations** (`config/user-monitoring.php`, each commented in place):
 
-- `action_monitoring` is off entirely. activitylog already records model changes with a
-  per-column diff, a causer and a subject; this package's version stores only a table name.
-  No model uses the `Actionable` trait. Never enable `on_read` — it hooks the `retrieved`
-  event, so one `/admin/users` page writes a row per listed user.
+- `action_monitoring` is off entirely — and note there is **no single `enable` key**: it is off
+  because all six event flags (`on_store`, `on_update`, `on_destroy`, `on_read`, `on_restore`,
+  `on_replicate`) are `false`. Flipping one turns the whole feature on for that event, so the
+  "off" here is six decisions rather than one switch. activitylog already records model changes
+  with a per-column diff, a causer and a subject; this package's version stores only a table
+  name. No model uses the `Actionable` trait. Never enable `on_read` — it hooks the `retrieved`
+  event, so one `/users` page writes a row per listed user.
 - `authentication_monitoring.delete_user_record_when_user_delete` is `false`. The default
-  `true` makes `user_id` cascade, so deleting an account at `/admin/users` erases its entire
+  `true` makes `user_id` cascade, so deleting an account at `/users` erases its entire
   sign-in history — exactly what you would want to read after removing a suspicious account.
   `false` gives `nullOnDelete()`, matching the visits table. Only read at migration time.
-- `delete_days` stays `0`. Retention is not configured here (see below), and `0` also keeps the
-  package's own `laravel-user-monitoring:remove-visit-monitoring-records` inert — it refuses to
-  run at `0`. Two commands pruning the same table from different cutoffs would be a mess.
+- `visit_monitoring.delete_days` stays `0`. That is the full key path and the only place it
+  exists — there is no top-level `delete_days`, and none under the other two sections, so
+  `config('user-monitoring.delete_days')` answers `null` and reads like the setting is absent.
+  Retention is not configured here (see below), and `0` also keeps the package's own
+  `laravel-user-monitoring:remove-visit-monitoring-records` inert — it refuses to run at `0`.
+  Two commands pruning the same table from different cutoffs would be a mess.
 
 **What counts as a visit** is `App\Monitoring\PageViewsOnly`, wired through
 `visit_monitoring.conditions`. It rejects non-GET requests, anything carrying `X-Livewire`,
@@ -447,7 +662,15 @@ directly would catch application exceptions and run the pipeline twice. Failures
 
 `RecordVisit` is registered **twice**: in the `web` group in `bootstrap/app.php` and in
 `AdminPanelProvider::middleware()`. The panel does not use the `web` group, so listing it in
-only one place silently misses half the app.
+only one place silently misses whatever the other stack serves.
+
+The split is lopsided now that the panel owns the root path. Panel registration covers every
+screen in the app; the `web` group is down to **`/log-viewer` alone** — `/up` is registered
+with no middleware group at all, and `routes/web.php` defines nothing. That makes the `web`
+half the easy one to delete by accident, and `/log-viewer` is the surface where that matters
+most: it serves raw log contents, so a read there is exactly what the visits table should
+hold. `UserMonitoringTest::test_a_page_view_outside_the_panel_is_recorded` is the one test
+standing on it — every other visit test now goes through the panel stack and would stay green.
 
 ### Retention
 
@@ -455,7 +678,7 @@ only one place silently misses half the app.
 `config:cache` compiles config into a single PHP file at deploy time, and generating PHP from
 user input is how a settings page becomes remote code execution. So the cutoffs live in the
 `monitoring_settings` table (one row, read via `MonitoringSetting::current()`), are edited at
-`/admin/monitoring`, and are applied by `App\Console\Commands\PruneMonitoring`.
+`/monitoring`, and are applied by `App\Console\Commands\PruneMonitoring`.
 
 Null means keep forever. Activity log retention is blank by default on purpose — it holds the
 record of deletions made on the other two screens.
@@ -482,9 +705,9 @@ use:
 
 | Deleting from | Recorded in | By |
 |---------------|-------------|-----|
-| `/admin/visits` | `activity_log`, event `visit_deleted` | `VisitMonitoring::booted()` |
-| `/admin/authentications` | `activity_log`, event `sign_in_deleted` | `AuthenticationMonitoring::booted()` |
-| `/admin/activities` | the log file, at `/log-viewer` | `AppServiceProvider::registerActivityDeletionLogging()` |
+| `/visits` | `activity_log`, event `visit_deleted` | `VisitMonitoring::booted()` |
+| `/authentications` | `activity_log`, event `sign_in_deleted` | `AuthenticationMonitoring::booted()` |
+| `/activities` | the log file, at `/log-viewer` | `AppServiceProvider::registerActivityDeletionLogging()` |
 
 The chain ends at the log file because it is the one surface the panel cannot write to.
 Recording activity-log deletions back into the activity log would be circular.
@@ -515,9 +738,13 @@ published config claims this exact one but expects a fully-qualified driver clas
 sharing it means setting the variable breaks whichever package did not get the format it
 wanted — while the package that *appears* broken is not the one whose setting changed.
 
-**`App\Models\Transaction` is the only model using it**, through the `receipts` collection —
-see Keuangan. That model settled the disk question this section used to leave open, and the
-answer is binding on whatever attaches files next: **the private `local` disk, not `public`**.
+**Two models use it, across three collections**: `App\Models\Transaction` through `receipts`
+(see Keuangan) and `App\Models\MeterReading` through `meter-photos-start` and `meter-photos-end`
+(see Listrik kost) — a collection per meter figure, so a photograph says for itself which number
+it is evidence for. Transaction settled the
+disk question this section used to leave open, and MeterReading followed it without reopening
+it — the answer is binding on whatever attaches files next: **the private `local` disk, not
+`public`**.
 Moving files between disks later means rewriting the `disk` column on every row *and*
 relocating the files, so it is the medialibrary equivalent of the timezone decision under
 Locale and timezone. A new collection should say `->useDisk('local')` unless there is a
@@ -619,12 +846,24 @@ consequences worth knowing before relying on it:
   spot the Monitoring section closes with `->fetchSelectedRecords()` on every bulk action — but
   here the cost is orphaned *files* on disk, which no later query can find to clean up.
 
-**Only deletions are audited, and only for `Transaction`.**
-`AppServiceProvider::registerReceiptDeletionLogging()` hooks `Media::deleted` and writes a
-`receipt_deleted` entry when the owner is a `Transaction`. Attaching and replacing a file are
-**not** recorded, and no other model's media is recorded at all. Media is a relation, so
-`LogsActivity` cannot see it — this is the same split `LogRoleChange` makes for roles. Extending
-it to another model means widening that `model_type` check, not adding a second listener.
+**Only deletions are audited, and only for the models on the map.**
+`AppServiceProvider::registerMediaDeletionLogging()` hooks `Media::deleted` once and looks the
+owner up in `AppServiceProvider::AUDITED_MEDIA_OWNERS`, which currently holds `Transaction`
+(log `transaction`, event `receipt_deleted`) and `MeterReading` (log `meter_reading`, event
+`meter_photo_deleted`). Attaching and replacing a file are **not** recorded, and a model absent
+from the map is not recorded at all. Media is a relation, so `LogsActivity` cannot see it — this
+is the same split `LogRoleChange` makes for roles.
+
+**Add to the map, never a second listener.** `Media::deleted` fires for every model in the app,
+so a listener per owner means a full check per deletion for each one, and as many places for
+the shape of the entry to drift. The log name and event key differ per owner deliberately:
+filtering the log for "a receipt was removed from the cash book" must not also return meter
+photographs.
+
+**The map is keyed by owner, not by collection**, and that is the right granularity. `MeterReading`
+has two collections and both write `meter_photo_deleted`; which end lost its photograph is in the
+entry's `collection` property, which the listener writes for every owner already. Splitting the
+key per collection would mean two event keys to remember for one question.
 
 Adding `LogsActivity` to the media model itself would need the usual explicit allowlist —
 `file_name` and `collection_name`, never `custom_properties`, which is a free-form JSON bag
@@ -681,7 +920,9 @@ canvas is barryvdh's own idiom; `PDF::setEncryption()` does exactly this.
 
 `<thead>` does repeat across pages without any help, so a long table stays readable.
 
-`default_paper_size` is already `a4` and should stay that way. That value comes from
+`dompdf.options.default_paper_size` is already `a4` and should stay that way. Note the full key
+path: it lives *inside* the `options` array, so `config('dompdf.default_paper_size')` answers
+`null` and reads like the setting is missing. That value comes from
 barryvdh's published config, not from dompdf — `Dompdf\Options::$defaultPaperSize` is `letter`.
 Anything that bypasses the Laravel config and drives `Dompdf` directly gets US Letter.
 
@@ -836,8 +1077,8 @@ a Scout builder — that moved to the new `FromScout`. `config/excel.php` has **
 between the two, so the published config is not a way to tell which version the surrounding
 code was written for.
 
-**`config/excel.php` is published and carries no deviations yet.** Two defaults are worth
-knowing before the first export ships:
+**`config/excel.php` is published and carries no deviations.** Two defaults are worth knowing
+before anything here writes a second format:
 
 - **The CSV defaults are American**: `delimiter => ','`, `use_bom => false`. Opened on an
   Indonesian Windows, whose list separator is `;`, such a file lands entirely in column A.
@@ -872,16 +1113,27 @@ model event fires.
 coordinates and device serials from a phone camera survive into whatever disk it lands on — and
 on the `public` disk that metadata is fetchable by URL along with the image. Conversions are
 re-encoded and lose most of it, but the original is what `getUrl()` returns by default. The
-receipt screens work around this rather than solve it: they render the `thumb` conversion
-everywhere, so the original is only reached by a deliberate signed request. Nothing strips the
-original, and stripping it would be a decision about altering what a user uploaded.
+receipt and meter-photo screens work around this rather than solve it: both render the `thumb`
+conversion everywhere, so the original is only reached by a deliberate signed request. Nothing
+strips the original, and stripping it would be a decision about altering what a user uploaded.
+
+That matters more for meter photographs than for receipts. A receipt is photographed wherever
+it happens to be; a meter is bolted to the building, so its EXIF coordinates are the address of
+a property with tenants in it.
 
 **Policies for vendor models are not auto-discovered.** Laravel maps `App\Models\X` to
 `App\Policies\XPolicy`. `Activity` lives in a vendor namespace, so `ActivityPolicy` is
 registered by hand in `AppServiceProvider::registerVendorModelPolicies()`. Without that line
 the policy is silently ignored and every permission check on it passes. Shield prints a
-"requires registration" note when generating such policies — do not skip it. Shield's own
-`RolePolicy` is registered by its service provider and needs nothing.
+"requires registration" note when generating such policies — do not skip it.
+
+**Shield prints that note for `RolePolicy` too, and there it is wrong.** Its own service
+provider registers that one, so nothing needs doing. The note is emitted from the namespace of
+the model, not from whether a binding exists, so it cannot tell the two cases apart. Check with
+`Gate::getPolicyFor(Model::class)` rather than trusting the label in either direction — today
+that returns `App\Policies\RolePolicy` for Shield's `Role`, `App\Policies\ActivityPolicy` for
+activitylog's `Activity`, and **`null` for medialibrary's `Media`**, which is the one still
+uncovered.
 
 `App\Models\VisitMonitoring` and `App\Models\AuthenticationMonitoring` exist only to dodge this
 trap: they subclass the package models so discovery reaches them, and Shield generated their
@@ -898,11 +1150,12 @@ properties; match the file you are editing.
 columns are absent on purpose: they are written by direct assignment, and a fillable secret is
 settable from any request that reaches a user form.
 
-**`booted()` is already taken on `User` and on `Transaction`** — by the two-factor audit hook
-and by the author stamp respectively. Eloquent allows one `booted()` per class, so a second
-definition silently replaces the first rather than erroring. Add listeners inside the existing
-method. Trait boot methods are exempt: `bootInteractsWithMedia()` runs *in addition to*
-`Transaction::booted()`, which is why the two coexist there.
+**`booted()` is already taken on `User`, `Transaction`, `MeterReading` and `ElectricityTariff`**
+— by the two-factor audit hook on the first and by the author stamp on the other three. Eloquent
+allows one `booted()` per class, so a second definition silently replaces the first rather than
+erroring. Add listeners inside the existing method. Trait boot methods are exempt:
+`bootInteractsWithMedia()` runs *in addition to* `Transaction::booted()`, which is why the two
+coexist there.
 
 **`permission.events_enabled` is set to `true` on purpose.** It ships as `false`. Role grants
 and revocations are audited through those events, so turning it off silently removes the
@@ -933,12 +1186,24 @@ v5 also stores diffs in their own `attribute_changes` column (`['old' => [...], 
 `filament:upgrade` script. A deploy that skips composer scripts ships a panel with no CSS.
 
 **Panel has its own middleware stack** defined in `AdminPanelProvider`, independent of
-`bootstrap/app.php`. Middleware added to the app's `web` group does not apply to `/admin`.
-`RecordVisit` is the worked example — it is listed in both places.
+`bootstrap/app.php`. Middleware added to the app's `web` group does not apply to the panel —
+which, since the panel sits at the root path, is nearly the whole app. `RecordVisit` is the
+worked example: it is listed in both places, and the only page left in the `web` group is
+`/log-viewer` (`/up` is registered with no group at all). That is what
+`UserMonitoringTest::test_a_page_view_outside_the_panel_is_recorded` covers — every other
+visit test now goes through the panel stack, so without it the `web`-group registration could
+be deleted with a green suite.
 
-**Any test that hits a route needs `RefreshDatabase`.** Every `web` request now writes to
-`visits_monitoring`. `RecordVisit` survives a missing table, but a test without migrations only
-proves the fallback works. `ExampleTest` was changed for this.
+**Any test that hits a route needs `RefreshDatabase`.** Every page request writes to
+`visits_monitoring` — the panel stack and the `web` group both run `RecordVisit`, so a `GET`
+anywhere but `/up` is a write. `RecordVisit` survives a missing table, but a test without
+migrations only proves the fallback works. `ExampleTest` was changed for this.
+
+**A guest can reach exactly one page: `/login`.** The panel owns the root path and everything
+behind it needs a role, so a test that wants an anonymous 200 has to ask for the login screen —
+there is no public page left. That is deliberate on the recording side too: `RecordVisit` sits
+in the panel's *base* stack rather than its `authMiddleware()`, so signed-out hits are logged.
+The visit tests in `UserMonitoringTest` are written against `/login` for this reason.
 
 **Indonesian has no plural inflection.** Filament pluralises a resource's `$modelLabel` unless
 `$pluralModelLabel` is set too, which produces "Penggunas". Every resource sets both to the
@@ -952,7 +1217,7 @@ The account is `admin@admin.com` / `admin`. Deliberately weak and local-only —
 environment guard on the seeder, so do not run `--seed` against a production database.
 
 The seeded account has no second factor, and cannot be given one from a seeder — the secret has
-to be paired with a phone at `/admin/profile`. Anywhere this account exists, two-factor is
+to be paired with a phone at `/profile`. Anywhere this account exists, two-factor is
 protecting nothing.
 
 `ShieldSeeder` is generated, not hand-written: `php artisan shield:seeder --force` snapshots
@@ -993,7 +1258,8 @@ full chain. The query eager-loads `causer` and `subject` because both are morphs
 joined.
 
 Log names in use: `user` (model changes, role grants, two-factor changes), `transaction`
-(cash book rows and receipt deletions — see Keuangan) and `monitoring`
+(cash book rows and receipt deletions — see Keuangan), `room`, `tariff` and `meter_reading`
+(the electricity feature and its photo deletions — see Listrik kost), and `monitoring`
 (deletions, prunes, and the spreadsheet export — a read that leaves the panel is recorded
 here rather than under `transaction`, because it is an operation on the book rather than a
 change to it).
@@ -1043,9 +1309,11 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   column stored in minor units. It also renders two decimal places unless given
   `decimalPlaces: 0`, and it cannot prefix a sign, which is why Keuangan formats amounts with
   `number_format()` instead.
-- **`TextInput::mask()` does nothing here.** Filament v5's Alpine build registers `float`,
-  `load-css`, `load-js`, `sortable` and `tooltip` as directives and `float` / `tooltip` as
-  magics — there is no `mask` directive and no `$money` magic, and no asset registers them.
+- **`TextInput::mask()` does nothing here.** Filament v5's Alpine build registers six directives
+  — `float`, `load-css`, `load-js`, `mousetrap`, `sortable`, `tooltip` — and two magics,
+  `float` and `tooltip`. There is no `mask` directive and no `$money` magic; grepping the whole
+  of `vendor/filament/*/dist` for `x-mask` or `$money` returns nothing, so no asset registers
+  them either.
   `mask()` still renders `x-mask` (or `x-mask:dynamic`), so the widely-quoted
   `->mask(RawJs::make('$money($input)'))` produces an attribute nothing reads: no error, no
   formatting. Either format server-side on `->live(onBlur: true)` the way Keuangan does, or
@@ -1068,12 +1336,38 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   one copy too many. Variants of one action live in the *same* class as several static
   factories over a shared private base — `ExportTransactionsAction::excel()` and `::pdf()`
   differ only in the renderer, and splitting them would duplicate the gate and the audit call.
+- **A media component repeated per collection belongs in a private factory method** on the schema
+  or table class, not typed out twice. `MeterReadingForm`, `MeterReadingsTable` and
+  `MeterReadingInfolist` each build both of their photo components from one `photos()` helper.
+  The reason is the failure mode rather than the line count: the flag that matters most on these,
+  `->visibility('private')`, produces a broken image and nothing in the log when it goes missing
+  from one copy, so a second copy is a second chance to lose it silently.
 - **An action that returns a download must return a `BinaryFileResponse` or a
   `StreamedResponse`.** Livewire's `SupportFileDownloads` intercepts exactly those two; any
   other response object falls through to the ordinary return path and Livewire tries to
   JSON-encode it, throwing **`Type is not supported`** — a message that names neither the
   action nor the response. `Excel::download()` already returns the right type;
   `Pdf::download()` does not, so wrap it in `response()->streamDownload(...)`. See PDF.
+- **A hidden field is not saved.** `->hidden()` / `->visible(false)` makes `isDehydrated()`
+  return false, and the component's state path is stripped from the payload — so a field hidden
+  to tidy a form silently stops writing its column. Pair it with `->dehydratedWhenHidden()`
+  whenever the value still has to reach the row, and assert the stored value in a test:
+  the form shows no error, and the failure surfaces as a NOT NULL violation naming a field the
+  user cannot see. `MeterReadingForm`'s rate field is the worked example.
+- **A `$set()` onto a date picker has to match that picker's own precision.** A
+  `DateTimePicker` configured `->seconds(false)` carries state as `Y-m-d H:i`, so writing
+  `Y-m-d H:i:s` into it from an `afterStateUpdated()` puts a shape in the form state that the
+  field never produces on its own. It still displays and still saves, so nothing fails — but
+  `assertSchemaStateSet()` compares the raw string and every test written against the field's
+  natural output disagrees with it. `MeterReadingForm` formats its prefill to match.
+- **A column with nothing behind it cannot sort itself.** `TextColumn::make('total_amount')`
+  fed by `->state()` from a model accessor has no database column, so `->sortable()` alone
+  produces a control that reorders by nothing. Pass the expression explicitly —
+  `->sortable(query: fn (Builder $q, string $direction) => $q->orderByRaw("… {$direction}"))`.
+  `MeterReadingsTable` does this for both derived columns.
+- **Navigation groups are set per resource**, not in the panel provider: `$navigationGroup`
+  on each `Resource`, with `$navigationSort` ordering within the group. The `Kost` group is the
+  worked example. A resource with no group sits above the grouped ones.
 - Before deploying run `php artisan filament:optimize` — caches component discovery and Blade
   icons. Without it every request pays a directory scan. Re-run `filament:optimize-clear` after
   editing the panel provider, or the cached component list masks your change.
@@ -1081,7 +1375,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 ## Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-157 tests at the last count.
+211 tests at the last count.
 
 | File | Locks in |
 |------|----------|
@@ -1090,13 +1384,23 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 | `ActivityLogPanelTest` | list and view render, no create/edit, deletes go to the file log |
 | `LogViewerAccessTest` | guests and roleless users blocked from the page *and* the API |
 | `UserResourceTest` | password hashing, blank-password edits, confirmation, self-delete refusal |
-| `UserMonitoringTest` | package routes stay gone, panel middleware coverage, delete auditing |
+| `UserMonitoringTest` | package routes stay gone, middleware coverage on both stacks — the panel's and the `web` group's `/log-viewer` — delete auditing |
 | `MonitoringRetentionTest` | retention saves, blank means forever, prune scope and summary |
 | `TwoFactorAuthenticationTest` | password alone is refused, valid code passes, secret never leaks, three audit events, admin reset |
 | `TransactionResourceTest` | policy gating, integer rupiah and what a fractional amount costs, grouped input round-trips and an ambiguous one is left alone, `occurred_at` default, receipts stay private and unsigned reads are refused, receipt / cascade / bulk delete auditing |
 | `TransactionExportTest` | who may download the book, the two-column ledger and its running balance, chronological order regardless of the table sort, filters carry over, amounts and dates are values rather than text, `0` prints while a blank side stays empty, both formats download and audit under one event, the PDF escapes user text and signs a negative balance readably, an empty book still renders |
+| `RoomResourceTest` | policy gating, a room with readings cannot be deleted from the resource *or* the database, deactivation keeps its readings, latest-reading ordering and its `id` tiebreak, occupant changes audited, bulk delete audited per row |
+| `ElectricityTariffTest` | policy gating, the rate in force is the latest that has started, a scheduled rate stays out until its date, an empty table has no rate, two tariffs cannot share a date, author stamped, grouped input round-trips, rate changes audited |
+| `MeterReadingResourceTest` | policy gating, usage and total derived from stored figures, **a later tariff does not change a recorded reading**, the rate field is hidden on both form screens yet still copied onto the row, shown only when there is no tariff, editing does not re-copy the current tariff, the form prefills the rate in force and both ends of the previous reading, a room with no history keeps the default opening moment, a closing figure below the opening one is refused, a closing moment before the opening one is refused while an equal one is accepted, author stamped, both reading moments default to now, the create button waits for a room, a photo belongs to the end it was uploaded against, photos stay private and unsigned reads are refused, photo / cascade / bulk delete auditing |
 | `PageViewsOnlyTest` (Unit) | which requests count as a visit |
 | `WholeRupiahTest` (Unit) | which amounts are whole rupiah, that untidy grouping is accepted, and that `1500.75` is refused rather than regrouped |
+
+**`phpunit.xml` raises `memory_limit` to 512M**, and that is not decoration. The whole suite runs
+in one process, and `TransactionExportTest` builds real `xlsx` files through phpspreadsheet and
+zipstream — by far the heaviest thing here. Past roughly two hundred tests it began exhausting
+PHP's 128M default, and the failure is a fatal error *inside zipstream* with no assertion
+attached: it reads as a broken export rather than as a memory ceiling. Lower it back and the
+next test file added rediscovers that the hard way.
 
 **`Storage::fake()` cannot test signed URLs.** It replaces the disk's temporary-URL builder with
 a stub returning `URL::to($path.'?expiration=…')` — no signature, no `/storage` prefix — so a

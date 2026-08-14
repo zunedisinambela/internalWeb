@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Listeners\LogRoleChange;
+use App\Models\MeterReading;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Policies\ActivityPolicy;
@@ -36,50 +37,84 @@ class AppServiceProvider extends ServiceProvider
         $this->registerVendorModelPolicies();
         $this->registerLogViewerGate();
         $this->registerRoleChangeAuditing();
-        $this->registerReceiptDeletionLogging();
+        $this->registerMediaDeletionLogging();
         $this->registerActivityDeletionLogging();
     }
 
     /**
-     * Records every receipt image removed from a transaction.
+     * The models whose attached files are audited when removed, and how each one
+     * is recorded.
      *
-     * A receipt is the evidence for the amount next to it, so removing one is a
-     * meaningful edit to the record even though the row itself does not change.
-     * LogsActivity on Transaction cannot see it: media is a relation, not a
-     * column. This is the same split LogRoleChange makes for roles.
+     * A map rather than one listener per model: Media::deleted fires for every
+     * model in the app, so a second listener would mean a second full-table
+     * check on every deletion, and two places for the shape of the entry to
+     * drift. Adding a model here is the whole change.
+     *
+     * The log name and the event key differ per owner on purpose. Filtering the
+     * activity log for "a receipt was removed from the cash book" must not also
+     * return meter photographs, and the two are read by different people for
+     * different reasons.
+     *
+     * @var array<class-string, array{log: string, event: string, description: string, owner_key: string}>
+     */
+    protected const AUDITED_MEDIA_OWNERS = [
+        Transaction::class => [
+            'log' => 'transaction',
+            'event' => 'receipt_deleted',
+            'description' => 'Bukti transaksi dihapus',
+            'owner_key' => 'transaction_id',
+        ],
+        MeterReading::class => [
+            'log' => 'meter_reading',
+            'event' => 'meter_photo_deleted',
+            'description' => 'Foto meteran dihapus',
+            'owner_key' => 'meter_reading_id',
+        ],
+    ];
+
+    /**
+     * Records every attached image removed from a model that owns one.
+     *
+     * A receipt is the evidence for the amount next to it, and a meter
+     * photograph is the evidence for the kWh figure next to it, so removing one
+     * is a meaningful edit to the record even though the row itself does not
+     * change. LogsActivity cannot see it: media is a relation, not a column.
+     * This is the same split LogRoleChange makes for roles.
      *
      * Hooked on the Media model rather than on the Filament form, so it also
      * covers a removal made from tinker or a console command. Media is a vendor
      * class with no App\Models subclass, so the listener is registered here by
      * hand — the same reason ActivityPolicy is.
      *
-     * Deleting a whole transaction fires this once per attached file on top of
-     * the row's own `deleted` entry. That duplication is wanted: a receipt
-     * removed on its own and a receipt that went down with its transaction are
-     * different events, and the log should not have to infer which happened.
+     * Deleting a whole owner fires this once per attached file on top of the
+     * row's own `deleted` entry. That duplication is wanted: a file removed on
+     * its own and a file that went down with its row are different events, and
+     * the log should not have to infer which happened.
      *
      * The blind spot is a query builder delete on the media table, which fires
      * no model events — the same one the monitoring screens close by pinning
      * every DeleteBulkAction to ->fetchSelectedRecords().
      */
-    protected function registerReceiptDeletionLogging(): void
+    protected function registerMediaDeletionLogging(): void
     {
         Media::deleted(function (Media $media): void {
-            if ($media->model_type !== Transaction::class) {
+            $rules = self::AUDITED_MEDIA_OWNERS[$media->model_type] ?? null;
+
+            if ($rules === null) {
                 return;
             }
 
-            activity('transaction')
+            activity($rules['log'])
                 ->performedOn($media->model)
-                ->event('receipt_deleted')
+                ->event($rules['event'])
                 ->withProperties([
                     'media_id' => $media->getKey(),
                     'file_name' => $media->file_name,
                     'collection' => $media->collection_name,
                     'size' => $media->size,
-                    'transaction_id' => $media->model_id,
+                    $rules['owner_key'] => $media->model_id,
                 ])
-                ->log('Bukti transaksi dihapus');
+                ->log($rules['description']);
         });
     }
 

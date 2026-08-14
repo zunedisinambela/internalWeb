@@ -198,6 +198,18 @@ return [
         'description' => 'keterangan',
         'occurred_at' => 'tanggal dan waktu',
         'receipts' => 'bukti',
+        'occupant' => 'penghuni',
+        'is_active' => 'status aktif',
+        'note' => 'catatan',
+        'rate' => 'tarif per kWh',
+        'effective_from' => 'tanggal berlaku',
+        'room_id' => 'kamar',
+        'start_kwh' => 'kWh awal',
+        'end_kwh' => 'kWh akhir',
+        'start_read_at' => 'waktu pembacaan awal',
+        'end_read_at' => 'waktu pembacaan akhir',
+        'photos_start' => 'foto meteran awal',
+        'photos_end' => 'foto meteran akhir',
     ],
 
 ];
