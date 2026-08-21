@@ -29,6 +29,12 @@ class UsersTable
                     ->searchable()
                     ->sortable(),
 
+                TextColumn::make('username')
+                    ->label('Nama pengguna')
+                    ->searchable()
+                    ->sortable()
+                    ->copyable(),
+
                 TextColumn::make('email')
                     ->searchable()
                     ->sortable()

@@ -146,7 +146,8 @@ or not. That is the weakest of the three gates by design; what it protects and w
 are set out under Media.
 
 **Managing users** — `/users` (`app/Filament/Resources/Users/`) creates accounts, sets
-passwords and assigns roles. Since a role is what grants access, this screen is how someone
+usernames and passwords, and assigns roles. Both identifiers a user signs in with are set
+here — see Sign-in identifiers. Since a role is what grants access, this screen is how someone
 gets into the panel at all. Note it does not restrict *which* role may be handed out: anyone
 who can reach it can grant `super_admin`, including to themselves. That is fine while only
 super admins hold `Create:User`, but a future staff role with user-management permissions
@@ -164,6 +165,50 @@ php artisan shield:seeder --force     # refresh ShieldSeeder from the current da
 `shield:setup` and `shield:super-admin` both throw `NonInteractiveValidationException` on a
 chained prompt when run with `--force` in a non-TTY. Run `shield:install`, `shield:generate`
 and `shield:seeder` individually instead.
+
+### Sign-in identifiers
+
+Either the **email address or the username** signs a user in. `App\Filament\Auth\Login`
+replaces the panel's login page — `->login(Login::class)` in `AdminPanelProvider` — and the whole
+change is two methods:
+
+- `getCredentialsFromFormData()` decides the column. Filament hands whatever it returns to
+  `EloquentUserProvider::retrieveByCredentials()`, which turns every key but `password` into a
+  where clause — so swapping `email` for `username` needs no custom guard and no custom user
+  provider. The keys are **AND-ed**, though, which is why the column has to be chosen *before*
+  the query rather than searched across both.
+- `throwFailureValidationException()` re-points the failure at `data.login`. The base class
+  attaches it to `data.email`, a field this form no longer has, and Livewire raises nothing for a
+  message on an unknown key — the screen would reload in silence for a wrong password as much as
+  for an unknown account.
+
+**An '@' means email, anything else means username.** The rule is total because `username` is
+`NOT NULL` and unique, and unambiguous because `UserForm` validates it `alphaDash` — no username
+can contain an '@', so no input matches both readings. `test_a_username_containing_an_at_sign_is_refused_by_the_form`
+is what keeps that true; drop the rule and the login page starts guessing.
+
+**Usernames are stored lowercase, email addresses are not.** SQLite compares TEXT with `=` case
+sensitively, so `Bendahara` against a stored `bendahara` would be an unknown account — the login
+page folds the username branch and leaves the email branch alone, because addresses have always
+been matched exactly and folding them here would change who can sign in, in passing. `UserForm`
+lowercases on `->live(onBlur: true)` rather than only in `->dehydrateStateUsing()`: `unique()`
+validates the raw state, so `Admin` typed against a stored `admin` would pass the check and then
+hit the index as a `QueryException`.
+
+The custom page lives in `app/Filament/Auth/` rather than under `app/Filament/Pages/`, so that
+nothing about it depends on which base class Filament's auth pages happen to extend. Today that
+would be safe either way — `Login` extends `SimplePage`, not `Filament\Pages\Page`, and
+`discoverPages()` only registers `Page` subclasses — but `EditProfile` *does* extend `Page` and
+has to carry `$isDiscovered = false` because of it. Keeping a replacement auth page out of the
+scanned directory answers that question once instead of per page.
+
+Backfilled accounts got a username from the local part of their address
+(`2026_08_22_000000_add_username_to_users_table`). The column was added nullable, filled, then
+tightened to `NOT NULL` and given its unique index: a NOT NULL column cannot be added to a table
+that already holds rows, and the index would have refused the second empty value.
+
+`username` is on the `LogsActivity` allowlist beside `name` and `email` — it is an identifier
+somebody signs in with, so a change to it belongs in the same trail.
 
 ### Two-factor authentication
 
@@ -192,7 +237,7 @@ losing it means every secret must be reset by hand. Recovery codes *are* hashed
 `#[Fillable]`; both are written by direct assignment.
 
 **Auditing** lives in `User::booted()`, not in `LogsActivity` — its allowlist is
-`['name', 'email']`, and widening it to cover the secret column would write the secret into the
+`['name', 'username', 'email']`, and widening it to cover the secret column would write the secret into the
 log. The hook watches `wasChanged('app_authentication_secret')` instead, so it records *that*
 the column changed and never what it changed to. Three events, deliberately distinct:
 
@@ -1366,8 +1411,8 @@ because the package models hardcode `$table` while its middleware inserts into
 alongside them — pick the attribute style the file already uses. Other models use plain
 properties; match the file you are editing.
 
-`#[Fillable]` on `User` lists three columns and must keep listing exactly those. The two-factor
-columns are absent on purpose: they are written by direct assignment, and a fillable secret is
+`#[Fillable]` on `User` lists four columns — `name`, `username`, `email`, `password` — and must
+keep listing exactly those. The two-factor columns are absent on purpose: they are written by direct assignment, and a fillable secret is
 settable from any request that reaches a user form.
 
 **`booted()` is already taken on seven models.** Eloquent allows one `booted()` per class, so a
@@ -1439,7 +1484,8 @@ same word.
 
 `DatabaseSeeder` calls `ShieldSeeder` then `AdminUserSeeder` — that order matters, because the
 admin account is made usable by `syncRoles([super_admin])` and the role has to exist first.
-The account is `admin@admin.com` / `admin`. Deliberately weak and local-only — there is no
+The account is `admin@admin.com` / `admin`, and its username is `admin` — either identifier
+signs it in (see Sign-in identifiers). Deliberately weak and local-only — there is no
 environment guard on the seeder, so do not run `--seed` against a production database.
 
 The seeded account has no second factor, and cannot be given one from a seeder — the secret has
@@ -1452,7 +1498,8 @@ fresh database will come up missing them.
 
 ## Audit log
 
-`User` uses `LogsActivity` with an explicit allowlist: `logOnly(['name', 'email'])`,
+`User` uses `LogsActivity` with an explicit allowlist:
+`logOnly(['name', 'username', 'email'])`,
 `logOnlyDirty()`, `dontLogEmptyChanges()`, log name `user`. The allowlist is deliberate — the
 table holds password hashes and remember tokens, and `logAll()` cannot stay safe as columns are
 added.
@@ -1501,7 +1548,8 @@ by `Delete:Activity` / `DeleteAny:Activity` and logged to the file log; see Moni
 full chain. The query eager-loads `causer` and `subject` because both are morphs and cannot be
 joined.
 
-Log names in use: `user` (model changes, role grants, two-factor changes), `transaction`
+Log names in use: `user` (model changes including either sign-in identifier, role grants,
+two-factor changes), `transaction`
 (cash book rows and receipt deletions — see Keuangan), `room`, `tariff` and `meter_reading`
 (the electricity feature and its photo deletions — see Listrik kost), `sale`, `sale_item`,
 `customer` and `product` (the Oriflame feature — see Oriflame), and `monitoring`
@@ -1526,6 +1574,18 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   `Filament\Schemas\Components\Callout` covers status banners.
 - Custom pages need `HasPageShield` for Shield to gate them; without it `canAccess()` falls
   back to the parent and the permission Shield generated is never checked.
+- **Filament's auth pages do not share one base class, and discovery treats them differently.**
+  `discoverPages()` registers a route for every `Filament\Pages\Page` subclass in the scanned
+  directory. `Login` extends `SimplePage` — a `BasePage`, not a `Page` — so it is passed over and
+  only queued as a Livewire component; `EditProfile` extends `Page` and ships
+  `$isDiscovered = false` precisely because it would not be. Check the parent before putting a
+  replacement auth page in `app/Filament/Pages`, or keep it outside the scan the way
+  `App\Filament\Auth\Login` does and wire it with `->login(Login::class)`.
+- **Renaming a field on an auth page orphans its error message.** Filament's `Login` throws its
+  failure against `data.email` by name, and Livewire raises nothing for a message on a key the
+  form does not have — the page reloads with no explanation for a wrong password and for an
+  unknown account alike. Override `throwFailureValidationException()` alongside the field. See
+  Sign-in identifiers.
 - Infolist `KeyValueEntry` renders scalars only. Non-scalar values must be stringified first —
   see `ActivityInfolist::stringifyValues()`.
 - `CodeEntry` requires the `phiki` package, which is not installed. Use a `TextEntry` with
@@ -1652,11 +1712,12 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 ## Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-267 tests at the last count.
+277 tests at the last count.
 
 | File | Locks in |
 |------|----------|
 | `PanelAccessTest` | roleless/super-admin/guest access, removing the last role locks out |
+| `LoginTest` | both identifiers reach the same account, the username is matched case-insensitively, a roleless user is refused by either, the refusal lands on a field that exists, an '@' cannot enter a username, usernames store lowercase, changes audited |
 | `UserActivityLoggingTest` | what is logged, what is never logged, causer, role grant/revoke |
 | `ActivityLogPanelTest` | list and view render, no create/edit, deletes go to the file log |
 | `LogViewerAccessTest` | guests and roleless users blocked from the page *and* the API |
@@ -1717,6 +1778,17 @@ dispatched rather than what ended up in the cells.
 `Tests\TestCase` provides `userWithRole()`, `superAdmin()` and `seedRoles()`. Roles come from
 `ShieldSeeder` so tests exercise the same data a deploy produces, and the permission cache is
 cleared afterwards — without that, a role created mid-test stays invisible to `Gate` checks.
+
+`userWithRole()` derives `username` from whatever address it was given rather than from the role,
+because two users in one test are told apart by their email and a role-keyed username would
+collide between a `superAdmin()` and a second one. Any test that writes a `User` row by hand has
+to supply the column: it is `NOT NULL`, so `User::create()` without it fails on the constraint
+rather than on an assertion. `UserFactory` fills it with a faker `userName()` with dots replaced,
+since the form's `alphaDash` rule is what the value has to look like.
+
+The login form's field is `login`, not `email` — `fillForm(['login' => …])` — and the page under
+test is `App\Filament\Auth\Login`, not Filament's. Testing against the base class silently
+fills nothing, and the assertion that fails is `assertAuthenticatedAs`, which names neither.
 
 `TransactionFactory` has `income()` and `expense()` states, both taking an explicit amount, so a
 test that asserts on a total never depends on a random one. `user_id` defaults to null: the

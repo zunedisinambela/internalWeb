@@ -20,6 +20,9 @@ class AdminUserSeeder extends Seeder
             ['email' => 'admin@admin.com'],
             [
                 'name' => 'Admin',
+                // The second identifier the login page accepts. Same account,
+                // same weak password — see the note in CLAUDE.md.
+                'username' => 'admin',
                 'password' => 'admin',
                 'email_verified_at' => now(),
             ],

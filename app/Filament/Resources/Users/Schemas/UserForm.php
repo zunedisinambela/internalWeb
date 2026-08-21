@@ -8,6 +8,7 @@ use Filament\Forms\Components\TextInput;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rules\Password;
 
 class UserForm
@@ -22,6 +23,27 @@ class UserForm
                         TextInput::make('name')
                             ->required()
                             ->maxLength(255),
+
+                        // alpha_dash, so it can never contain an '@' — that is
+                        // what lets the login page pick the column to match on
+                        // by looking for one. See App\Filament\Auth\Login.
+                        //
+                        // Lowercased as the field loses focus rather than only
+                        // on the way out: SQLite compares TEXT with `=` case
+                        // sensitively, so a `Admin` typed against a stored
+                        // `admin` would pass unique() and then hit the index as
+                        // a QueryException. Normalising before validation means
+                        // the check runs on the value the column will receive.
+                        TextInput::make('username')
+                            ->label('Nama pengguna')
+                            ->required()
+                            ->alphaDash()
+                            ->maxLength(50)
+                            ->live(onBlur: true)
+                            ->afterStateUpdated(fn (?string $state, callable $set) => $set('username', Str::lower(trim((string) $state))))
+                            ->unique(ignoreRecord: true)
+                            ->dehydrateStateUsing(fn (?string $state): ?string => Str::lower(trim((string) $state)) ?: null)
+                            ->helperText('Huruf, angka, tanda hubung dan garis bawah. Dipakai untuk masuk, sama seperti email.'),
 
                         TextInput::make('email')
                             ->email()

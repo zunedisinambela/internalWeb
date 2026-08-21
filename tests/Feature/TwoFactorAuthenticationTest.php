@@ -2,12 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Filament\Auth\Login;
 use App\Filament\Resources\Users\Pages\ListUsers;
 use App\Filament\Resources\Users\UserResource;
 use App\Models\User;
 use Filament\Actions\Testing\TestAction;
 use Filament\Auth\MultiFactor\App\AppAuthentication;
-use Filament\Auth\Pages\Login;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -238,7 +238,7 @@ class TwoFactorAuthenticationTest extends TestCase
 
         Livewire::test(Login::class)
             ->fillForm([
-                'email' => $user->email,
+                'login' => $user->email,
                 'password' => 'admin-password',
             ])
             ->call('authenticate');
@@ -254,7 +254,7 @@ class TwoFactorAuthenticationTest extends TestCase
 
         $component = Livewire::test(Login::class)
             ->fillForm([
-                'email' => $user->email,
+                'login' => $user->email,
                 'password' => 'admin-password',
             ])
             ->call('authenticate');
@@ -278,7 +278,7 @@ class TwoFactorAuthenticationTest extends TestCase
 
         Livewire::test(Login::class)
             ->fillForm([
-                'email' => $user->email,
+                'login' => $user->email,
                 'password' => 'admin-password',
             ])
             ->call('authenticate');

@@ -37,6 +37,7 @@ class UserResourceTest extends TestCase
         Livewire::test(CreateUser::class)
             ->fillForm([
                 'name' => 'New Staff',
+                'username' => 'new_staff',
                 'email' => 'new@admin.com',
                 'password' => 'a-strong-password',
                 'password_confirmation' => 'a-strong-password',
@@ -61,6 +62,7 @@ class UserResourceTest extends TestCase
         Livewire::test(CreateUser::class)
             ->fillForm([
                 'name' => 'New Staff',
+                'username' => 'short_staff',
                 'email' => 'short@admin.com',
                 'password' => 'abc',
                 'password_confirmation' => 'abc',
@@ -78,6 +80,7 @@ class UserResourceTest extends TestCase
         Livewire::test(CreateUser::class)
             ->fillForm([
                 'name' => 'New Staff',
+                'username' => 'mismatch_staff',
                 'email' => 'mismatch@admin.com',
                 'password' => 'a-strong-password',
                 'password_confirmation' => 'a-different-password',
@@ -149,6 +152,7 @@ class UserResourceTest extends TestCase
         Livewire::test(CreateUser::class)
             ->fillForm([
                 'name' => 'New Staff',
+                'username' => 'stored_staff',
                 'email' => 'stored@admin.com',
                 'password' => 'a-strong-password',
                 'password_confirmation' => 'a-strong-password',

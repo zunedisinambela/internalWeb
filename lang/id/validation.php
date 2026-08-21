@@ -186,6 +186,7 @@ return [
      */
     'attributes' => [
         'name' => 'nama',
+        'username' => 'nama pengguna',
         'email' => 'email',
         'password' => 'kata sandi',
         'password_confirmation' => 'konfirmasi kata sandi',

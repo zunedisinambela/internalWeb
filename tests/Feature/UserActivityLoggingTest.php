@@ -15,6 +15,7 @@ class UserActivityLoggingTest extends TestCase
     {
         return User::create([
             'name' => 'Staff',
+            'username' => 'staff',
             'email' => 'staff@admin.com',
             'password' => 'secret',
         ]);
@@ -59,6 +60,7 @@ class UserActivityLoggingTest extends TestCase
     {
         $actor = User::create([
             'name' => 'Actor',
+            'username' => 'actor',
             'email' => 'actor@admin.com',
             'password' => 'secret',
         ]);

@@ -2,6 +2,7 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Auth\Login;
 use App\Http\Middleware\RecordVisit;
 use BezhanSalleh\FilamentShield\FilamentShieldPlugin;
 use Filament\Auth\MultiFactor\App\AppAuthentication;
@@ -33,7 +34,11 @@ class AdminPanelProvider extends PanelProvider
             // and its route names (filament.admin.*), not the URL. Nothing may
             // claim `/` in routes/web.php while this is empty.
             ->path('')
-            ->login()
+            // The custom page accepts a username as well as an email address.
+            // It sits outside app/Filament/Pages so it stays independent of
+            // whether a given auth page is a Page subclass discovery would
+            // pick up — see the class docblock.
+            ->login(Login::class)
             // The profile page is where a user turns two-factor on or off for
             // their own account, so enabling MFA without it leaves the feature
             // unreachable. isSimple: false keeps the panel chrome around it

@@ -6,6 +6,7 @@ use App\Models\User;
 use BezhanSalleh\FilamentShield\Support\Utils;
 use Database\Seeders\ShieldSeeder;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Illuminate\Support\Str;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
 
@@ -18,11 +19,18 @@ abstract class TestCase extends BaseTestCase
      */
     protected function userWithRole(?string $role = null, array $attributes = []): User
     {
-        $user = User::create(array_merge([
+        $attributes = array_merge([
             'name' => $role ?? 'No Role',
             'email' => ($role ?? 'norole').'@admin.com',
             'password' => 'secret',
-        ], $attributes));
+        ], $attributes);
+
+        // Derived from whatever address the caller passed rather than from the
+        // role: two users in one test are told apart by their email, and a
+        // username keyed on the role would collide between them.
+        $attributes['username'] ??= Str::slug(Str::before($attributes['email'], '@'), '_');
+
+        $user = User::create($attributes);
 
         if ($role !== null) {
             $this->seedRoles();

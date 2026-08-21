@@ -18,6 +18,10 @@ class UserInfolist
                     ->components([
                         TextEntry::make('name'),
 
+                        TextEntry::make('username')
+                            ->label('Nama pengguna')
+                            ->copyable(),
+
                         TextEntry::make('email')
                             ->copyable(),
 
