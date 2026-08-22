@@ -14,6 +14,7 @@ use Filament\Pages\Dashboard;
 use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\Support\Colors\Color;
+use Filament\View\PanelsRenderHook;
 use Filament\Widgets\AccountWidget;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
@@ -21,6 +22,7 @@ use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Illuminate\View\View;
 
 class AdminPanelProvider extends PanelProvider
 {
@@ -58,6 +60,12 @@ class AdminPanelProvider extends PanelProvider
             ->colors([
                 'primary' => Color::Amber,
             ])
+            // The cash book export runs on the queue, so the file is finished
+            // after the request that asked for it has ended. A flash message
+            // cannot reach the user by then; a database notification can, and
+            // it survives a closed tab. See App\Jobs\ExportCashBook.
+            ->databaseNotifications()
+            ->databaseNotificationsPolling('30s')
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\Filament\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\Filament\Pages')
             ->pages([
@@ -84,6 +92,23 @@ class AdminPanelProvider extends PanelProvider
                 // page are recorded too.
                 RecordVisit::class,
             ])
+            // Panel CSS cannot go through the app's Vite build — Filament serves
+            // its own compiled stylesheet. STYLES_AFTER puts these rules after
+            // it, so they win on order, and a render hook has no publish step a
+            // deploy could skip. Currently: horizontal table scrolling on
+            // narrow screens.
+            ->renderHook(
+                PanelsRenderHook::STYLES_AFTER,
+                fn (): View => view('filament.panel-styles'),
+            )
+            // Click-to-zoom for image entries. It hangs off a `data-lightbox`
+            // attribute rather than a custom entry class, so opting a screen in
+            // is one ->extraAttributes() call. BODY_END puts it after Filament's
+            // own scripts, which is where Alpine has already been booted.
+            ->renderHook(
+                PanelsRenderHook::BODY_END,
+                fn (): View => view('filament.lightbox'),
+            )
             ->plugins([
                 FilamentShieldPlugin::make(),
             ])

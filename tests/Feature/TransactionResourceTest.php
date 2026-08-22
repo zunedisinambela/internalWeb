@@ -370,6 +370,48 @@ class TransactionResourceTest extends TestCase
     }
 
     /**
+     * Every receipt is its own link, and the wrapper is marked for the viewer.
+     *
+     * Two things here fail silently. The lightbox attaches to `data-lightbox`,
+     * so losing that attribute leaves a screen where clicking a receipt does
+     * nothing — no error, no console message. And the per-image URL depends on
+     * the ->url() closure declaring a parameter named `state`:
+     * CanOpenUrl::hasStateBasedUrls() looks it up by name, so renaming it to
+     * `$uuid` would point every thumbnail at the same file while still
+     * rendering perfectly. Two receipts with two distinct hrefs is what catches
+     * that; one receipt would pass either way.
+     */
+    public function test_each_receipt_is_its_own_link_on_the_view_screen(): void
+    {
+        Storage::fake('local');
+
+        $transaction = Transaction::factory()->income(50_000)->create();
+
+        foreach (['struk-satu.jpg', 'struk-dua.jpg'] as $name) {
+            $transaction->addMedia(UploadedFile::fake()->image($name))
+                ->toMediaCollection(Transaction::RECEIPTS);
+        }
+
+        $html = $this->actingAs($this->superAdmin())
+            ->get('/transactions/'.$transaction->getKey())
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringContainsString('data-lightbox="receipts"', $html);
+
+        $hrefs = collect($transaction->refresh()->getMedia(Transaction::RECEIPTS))
+            ->map(fn ($media): string => $media->getTemporaryUrl(now()->addMinutes(30)->endOfHour()))
+            ->all();
+
+        $this->assertCount(2, $hrefs);
+        $this->assertNotSame($hrefs[0], $hrefs[1], 'The two receipts resolved to one URL.');
+
+        foreach ($hrefs as $href) {
+            $this->assertStringContainsString(e($href), $html);
+        }
+    }
+
+    /**
      * Receipts are a relation, so LogsActivity cannot see them. Removing one is
      * an edit to the evidence behind an amount, which is exactly the kind of
      * change the audit trail exists for.

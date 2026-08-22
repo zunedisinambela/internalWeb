@@ -69,7 +69,9 @@ php artisan storage:link           # NOT part of `composer setup` — see Media
 - **Database is SQLite** (`database/database.sqlite`), gitignored via `database/.gitignore`.
   Tests run against `:memory:` (see `phpunit.xml`), so they never touch the dev database.
 - Frontend: Vite 8 + Tailwind 4. Filament ships its own compiled CSS/JS and does not go
-  through the app's Vite build.
+  through the app's Vite build — so `resources/css/app.css` styles nothing in the panel, which
+  is the whole app. Panel CSS and JS arrive through render hooks instead; see Panel CSS and JS
+  under Filament conventions.
 - **Two-factor is Filament's own**, not a package — `pragmarx/google2fa-qrcode` and
   `chillerlan/php-qrcode` v5 arrive as Filament dependencies (`filament/filament` requires the
   latter directly). Opt-in per user. See Access control. Note `bacon/bacon-qr-code` is **not**
@@ -123,7 +125,9 @@ rendering as the raw key. That also means a forgotten translation is easy to mis
   English baked in. Nothing to translate short of forking it.
 - Code, comments and commit messages.
 
-`APP_NAME` is still `Laravel`, so that is what the topbar and browser tab show.
+`APP_NAME` is `Internal Web`, so that is what the topbar and browser tab show. Filament
+takes the brand name from `config('app.name')` unless `->brandName()` overrides it, and
+nothing does — so the login card, the topbar and the `<title>` all follow that one variable.
 
 ## Access control
 
@@ -1213,6 +1217,38 @@ Adding `LogsActivity` to the media model itself would need the usual explicit al
 `file_name` and `collection_name`, never `custom_properties`, which is a free-form JSON bag
 whose contents nobody controls centrally.
 
+**Clicking an image opens it full size, and that is a render hook rather than a
+component** — see Panel CSS and JS under Filament conventions for why the panel's own CSS and
+JS arrive that way. `resources/views/filament/lightbox.blade.php` is injected at
+`PanelsRenderHook::BODY_END` and attaches to any element carrying `data-lightbox`,
+treating every `<a>` inside it as one slide — pan, wheel and pinch zoom, arrow-key
+paging. Opting a screen in is two calls on the entry: `->extraAttributes(['data-lightbox' => …])`
+on the wrapper and a **state-based** `->url()`. `TransactionInfolist` is the worked example.
+
+Three things about it fail silently:
+
+- `ImageEntry` only wraps each image in an `<a>` when `->url()` is given a closure
+  **declaring a parameter named `state`** — `CanOpenUrl::hasStateBasedUrls()` looks it up
+  by name. Rename it to `$uuid` and every thumbnail links to the same file while still
+  rendering perfectly. `test_each_receipt_is_its_own_link_on_the_view_screen` uses two
+  receipts for exactly that reason; one would pass either way.
+- The `href` is a signed link to the **original**, not to the conversion the thumbnail
+  shows. That is the intended path — the original is meant to take a deliberate signed
+  request — but it is also the EXIF-bearing copy, so weigh it per collection rather than
+  copying the call blindly onto meter photographs.
+- The expiry mirrors `SpatieMediaLibraryImageEntry::getImageUrl()`
+  (`filament.temporary_file_url_expiry_minutes`, rounded with `endOfHour()`). Diverge from
+  it and the thumbnail outlives the file behind it, or the other way round.
+
+The `href` stays a real link and the script only intercepts an unmodified click, so a JS
+failure degrades to opening the file rather than to a dead thumbnail, and a ctrl- or
+cmd-click still opens a tab.
+
+**It is on the transaction view screen only.** The `Bukti` column on the cash book *list*
+(`TransactionsTable`) is not wired up: the cell sits inside a row that has its own click
+behaviour, and which of the two wins was not established. Two calls would add it — the same
+two — but check that first.
+
 **Filament integration is `filament/spatie-laravel-media-library-plugin` v5.7.6**, a separate
 package from Filament itself, and the source of `SpatieMediaLibraryFileUpload`,
 `SpatieMediaLibraryImageColumn` and `SpatieMediaLibraryImageEntry`. Note it constrains
@@ -1839,10 +1875,76 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   icons. Without it every request pays a directory scan. Re-run `filament:optimize-clear` after
   editing the panel provider, or the cached component list masks your change.
 
+### Panel CSS and JS
+
+**`resources/css/app.css` does not reach the panel.** Filament serves its own compiled
+stylesheet and does not go through the app's Vite build, so a rule written there applies to
+nothing — the panel is the whole app, so in practice it applies to no page at all. The same
+holds for `resources/js/app.js`. Nothing errors; the rule is simply never loaded.
+
+Three ways to add CSS or JS to the panel, and this project picked the third:
+
+| Route | Cost |
+|-------|------|
+| `->viteTheme('resources/css/filament/admin/theme.css')` | you now own Filament's CSS build — every upgrade means recompiling the theme, and a skipped `npm run build` ships a panel missing its own styles |
+| `FilamentAsset::register([Css::make(...)])` | needs `php artisan filament:assets` to have run. It does, via `post-autoload-dump` → `filament:upgrade` — but a deploy that skips composer scripts drops the file silently, the same trap the gitignored Filament assets have |
+| **a render hook returning a Blade partial** | inlined into the response, so there is no build step and no publish step to skip. Costs a few hundred bytes per page and no separate cache entry |
+
+For a handful of rules the render hook is the only one of the three with no silent-failure
+mode, which is why both current additions use it. They are registered in `AdminPanelProvider`:
+
+| Hook | Partial | What |
+|------|---------|------|
+| `PanelsRenderHook::STYLES_AFTER` | `resources/views/filament/panel-styles.blade.php` | horizontal table scrolling on narrow screens |
+| `PanelsRenderHook::BODY_END` | `resources/views/filament/lightbox.blade.php` | click-to-zoom image viewer — see Media |
+
+**Pick the hook by what has to be loaded already.** `STYLES_AFTER` renders after Filament's own
+stylesheet, so rules there win on source order and need no `!important`; `HEAD_END` renders
+*before* it and would lose. `BODY_END` renders after Filament's scripts, so Alpine is booted by
+the time markup carrying `x-data` appears. Both live in
+`vendor/filament/filament/resources/views/components/layout/base.blade.php`, which every panel
+page uses — including `/login` and the other auth screens.
+
+**Filament's dark mode is a `.dark` class on an ancestor, not `prefers-color-scheme`.** Custom
+CSS written against the media query ignores the panel's own toggle, so it is right half the
+time and looks like a rendering bug the rest.
+
+**Alpine is bundled and booted by Filament**, so a component registered with `Alpine.data()`
+races its `alpine:init`. An inline `x-data` object literal has no such ordering to get wrong,
+which is what `lightbox.blade.php` uses. Anything binding to elements Livewire re-renders has
+to delegate from `document` as well — a listener attached to the elements themselves survives
+the first update and vanishes on the second, with nothing in the console.
+
+### Tables on narrow screens
+
+`resources/views/filament/panel-styles.blade.php` makes tables scroll sideways below `lg`.
+What it does and does not do is worth knowing before reaching for it again:
+
+- **Filament already sets `overflow-x: auto`** on `.fi-ta-content-ctn`
+  (`vendor/filament/tables/resources/css/content.css`), and `.fi-ta-ctn` is a **row** flex
+  container — for the side filter panels — whose content child `.fi-ta-main` carries
+  `min-w-0 flex-1`. That `min-w-0` is what stops a wide table pushing the layout out; without
+  it `.fi-layout`'s `overflow-x: clip` would cut the table off with no scroll at all. So the
+  scrolling itself needs no help.
+- **What was missing is a floor.** Cells wrap until the table fits the viewport, so frequently
+  there is nothing to scroll — the columns just become unreadably narrow. `.fi-ta-table` gets
+  `min-width: var(--fi-ta-mobile-min-width, 48rem)`, which turns squeezing back into overflow.
+  Override the variable on a page wrapper where a narrower table would do.
+- **And an affordance.** Overlay scrollbars stay invisible until a scroll is already under way,
+  so nothing says more columns exist off-screen. The bar is given a height and a colour.
+- `overscroll-behavior-x: contain` is not decoration: without it a swipe that reaches the end
+  of the table becomes the browser's back gesture, and the reader loses the page while trying
+  to see the last column.
+
+The complementary lever is `->visibleFrom('lg')` on low-value columns, which shortens the
+swipe. Note it is **not** `toggleable()` — a column hidden that way cannot be brought back from
+the column-manager button on a narrow screen, so it suits columns that are never read on a
+phone rather than ones that are occasionally wanted.
+
 ## Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-283 tests at the last count.
+284 tests at the last count.
 
 | File | Locks in |
 |------|----------|
@@ -1855,7 +1957,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 | `UserMonitoringTest` | package routes stay gone, middleware coverage on both stacks — the panel's and the `web` group's `/log-viewer` — delete auditing |
 | `MonitoringRetentionTest` | retention saves, blank means forever, prune scope and summary |
 | `TwoFactorAuthenticationTest` | password alone is refused, valid code passes, secret never leaks, three audit events, admin reset |
-| `TransactionResourceTest` | policy gating, integer rupiah and what a fractional amount costs, grouped input round-trips and an ambiguous one is left alone, `occurred_at` default, receipts stay private and unsigned reads are refused, receipt / cascade / bulk delete auditing |
+| `TransactionResourceTest` | policy gating, integer rupiah and what a fractional amount costs, grouped input round-trips and an ambiguous one is left alone, `occurred_at` default, receipts stay private and unsigned reads are refused, each receipt is its own link and the lightbox wrapper is marked, receipt / cascade / bulk delete auditing |
 | `TransactionExportTest` | who may download the book, the two-column ledger and its running balance, chronological order regardless of the table sort, filters carry over, amounts and dates are values rather than text, `0` prints while a blank side stays empty, **both formats queue rather than download** and the job carries the filtered ids and a name stamped at dispatch, the rendered file lands on the private disk and is announced by a database notification, a second click on the same screen queues nothing while a different row set or format still does, the same rows in a different order are one request, an expired file is pruned while a fresh one is kept, both formats audit under one event, the PDF escapes user text and signs a negative balance readably, an empty book still renders |
 | `RoomResourceTest` | policy gating, a room with readings cannot be deleted from the resource *or* the database, deactivation keeps its readings, latest-reading ordering and its `id` tiebreak, occupant changes audited, bulk delete audited per row |
 | `ElectricityTariffTest` | policy gating, the rate in force is the latest that has started, a scheduled rate stays out until its date, an empty table has no rate, two tariffs cannot share a date, author stamped, grouped input round-trips, rate changes audited |
