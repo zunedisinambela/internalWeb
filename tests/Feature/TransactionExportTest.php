@@ -6,6 +6,7 @@ use App\Enums\TransactionType;
 use App\Exports\TransactionsExport;
 use App\Filament\Resources\Transactions\Pages\ListTransactions;
 use App\Filament\Resources\Transactions\TransactionResource;
+use App\Jobs\ExportCashBook;
 use App\Models\Transaction;
 use App\Reports\CashBook;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -13,7 +14,9 @@ use Filament\Actions\Testing\TestAction;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Notifications\DatabaseNotification;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Livewire;
 use Maatwebsite\Excel\Excel as ExcelFormat;
@@ -99,16 +102,154 @@ class TransactionExportTest extends TestCase
             ->assertActionVisible(TestAction::make('exportExcel'));
     }
 
-    public function test_it_downloads_a_spreadsheet(): void
+    /**
+     * The action queues the render; it does not hand back a file.
+     *
+     * The whole point of the change is that nobody waits on phpspreadsheet
+     * inside a web request, so an assertion that a download came back would be
+     * asserting the thing that was removed. What matters instead is that the
+     * job carries the filtered set and a name stamped at the moment it was
+     * asked for, rather than whenever a worker happens to pick it up.
+     */
+    public function test_asking_for_a_spreadsheet_queues_the_render(): void
     {
+        Bus::fake();
+
         Carbon::setTestNow('2026-08-14 15:30:00');
 
-        Transaction::factory()->income(1_500_000)->create();
+        $transaction = Transaction::factory()->income(1_500_000)->create();
 
         Livewire::actingAs($this->superAdmin())
             ->test(ListTransactions::class)
-            ->callAction(TestAction::make('exportExcel'))
-            ->assertFileDownloaded('buku-kas-2026-08-14-153000.xlsx');
+            ->callAction(TestAction::make('exportExcel'));
+
+        Bus::assertDispatched(
+            ExportCashBook::class,
+            fn (ExportCashBook $job): bool => $job->ids === [$transaction->id]
+                && $job->format === 'xlsx'
+                && $job->fileName === 'buku-kas-2026-08-14-153000.xlsx',
+        );
+    }
+
+    /**
+     * The button is a button, so it gets clicked twice. Each click unguarded is
+     * its own job: two full copies of the book on disk, two
+     * `transactions_exported` entries for one act, and two notifications
+     * offering the same thing.
+     */
+    public function test_clicking_twice_on_the_same_screen_queues_one_render(): void
+    {
+        Bus::fake();
+
+        $this->makeBook();
+
+        $page = Livewire::actingAs($this->superAdmin())->test(ListTransactions::class);
+
+        $page->callAction(TestAction::make('exportExcel'));
+        $page->callAction(TestAction::make('exportExcel'));
+
+        Bus::assertDispatchedTimes(ExportCashBook::class, 1);
+    }
+
+    /**
+     * The other half of the guard, and the reason the key is the row set rather
+     * than just the user and the format.
+     *
+     * Keying on userId.format alone would refuse this too: filter the screen
+     * differently, click again, and the export is silently discarded while the
+     * screen says it is being processed. A narrower key only refuses a genuine
+     * repeat.
+     */
+    public function test_a_different_row_set_or_format_is_a_different_request(): void
+    {
+        Bus::fake();
+
+        $admin = $this->superAdmin();
+
+        ExportCashBook::dispatch([1, 2, 3], 'xlsx', $admin->id, 'a.xlsx');
+        ExportCashBook::dispatch([1, 2], 'xlsx', $admin->id, 'b.xlsx');
+        ExportCashBook::dispatch([1, 2, 3], 'pdf', $admin->id, 'c.pdf');
+
+        Bus::assertDispatchedTimes(ExportCashBook::class, 3);
+    }
+
+    /**
+     * The ids arrive in whatever order the filtered query returned them — the
+     * action calls reorder(), so there is no ORDER BY at all and the same set
+     * can come back arranged differently. uniqueId() sorts before hashing for
+     * exactly that reason, and without this the guard would quietly do nothing:
+     * every click would hash to a fresh key and every duplicate would queue.
+     */
+    public function test_the_same_rows_in_a_different_order_are_the_same_request(): void
+    {
+        Bus::fake();
+
+        $admin = $this->superAdmin();
+
+        ExportCashBook::dispatch([3, 1, 2], 'xlsx', $admin->id, 'a.xlsx');
+        ExportCashBook::dispatch([1, 2, 3], 'xlsx', $admin->id, 'b.xlsx');
+
+        Bus::assertDispatchedTimes(ExportCashBook::class, 1);
+    }
+
+    /**
+     * The finished file is a complete copy of the cash book, so it goes to the
+     * private disk — the same place receipts go, for the same reason. Landing
+     * it on `public` would publish the book by URL and sidestep every policy
+     * the panel enforces.
+     *
+     * The notification is the other half: the request that asked for the file
+     * has ended by the time it exists, so a flash message could never reach the
+     * user. Without a database notification the file is written and nobody is
+     * ever told where.
+     */
+    public function test_the_rendered_file_lands_on_the_private_disk_and_is_announced(): void
+    {
+        Storage::fake(ExportCashBook::DISK);
+
+        Carbon::setTestNow('2026-08-14 15:30:00');
+
+        $admin = $this->superAdmin();
+
+        $this->makeBook();
+
+        // The queue connection is `sync` under test, so the job runs here.
+        Livewire::actingAs($admin)
+            ->test(ListTransactions::class)
+            ->callAction(TestAction::make('exportExcel'));
+
+        Storage::disk(ExportCashBook::DISK)
+            ->assertExists(ExportCashBook::DIRECTORY.'/buku-kas-2026-08-14-153000.xlsx');
+
+        $notification = DatabaseNotification::query()->sole();
+
+        $this->assertTrue($admin->is($notification->notifiable));
+        $this->assertStringContainsString('siap diunduh', $notification->data['title']);
+    }
+
+    /**
+     * A copy of the book must not outlive the link that reaches it. The cutoff
+     * and the signature expiry are the same constant, so this also pins that
+     * they cannot drift apart.
+     */
+    public function test_a_rendered_file_is_pruned_once_its_link_has_expired(): void
+    {
+        Storage::fake(ExportCashBook::DISK);
+
+        $disk = Storage::disk(ExportCashBook::DISK);
+
+        $disk->put(ExportCashBook::DIRECTORY.'/buku-kas-lama.xlsx', 'x');
+        touch(
+            $disk->path(ExportCashBook::DIRECTORY.'/buku-kas-lama.xlsx'),
+            now()->subHours(ExportCashBook::RETENTION_HOURS + 1)->getTimestamp(),
+        );
+
+        $disk->put(ExportCashBook::DIRECTORY.'/buku-kas-baru.xlsx', 'x');
+
+        $this->artisan('exports:prune')->assertSuccessful();
+
+        $disk->assertMissing(ExportCashBook::DIRECTORY.'/buku-kas-lama.xlsx');
+        $disk->assertExists(ExportCashBook::DIRECTORY.'/buku-kas-baru.xlsx');
     }
 
     /**
@@ -118,6 +259,8 @@ class TransactionExportTest extends TestCase
      */
     public function test_downloading_is_audited(): void
     {
+        Storage::fake(ExportCashBook::DISK);
+
         $admin = $this->superAdmin();
 
         Transaction::factory()->income(1_000_000)->create();
@@ -137,16 +280,51 @@ class TransactionExportTest extends TestCase
         $this->assertStringEndsWith('.xlsx', $entry->properties['file_name']);
     }
 
-    public function test_it_downloads_a_pdf(): void
+    public function test_asking_for_a_pdf_queues_the_render(): void
     {
+        Bus::fake();
+
         Carbon::setTestNow('2026-08-14 15:30:00');
 
         $this->makeBook();
 
         Livewire::actingAs($this->superAdmin())
             ->test(ListTransactions::class)
-            ->callAction(TestAction::make('exportPdf'))
-            ->assertFileDownloaded('buku-kas-2026-08-14-153000.pdf');
+            ->callAction(TestAction::make('exportPdf'));
+
+        Bus::assertDispatched(
+            ExportCashBook::class,
+            fn (ExportCashBook $job): bool => $job->format === 'pdf'
+                && $job->fileName === 'buku-kas-2026-08-14-153000.pdf',
+        );
+    }
+
+    /**
+     * dompdf takes the same route as the spreadsheet: rendered in the job,
+     * written to the private disk, announced afterwards. Asserting the magic
+     * bytes off the stored file is what proves the render actually happened
+     * rather than an empty placeholder being written.
+     */
+    public function test_the_rendered_pdf_lands_on_the_private_disk(): void
+    {
+        Storage::fake(ExportCashBook::DISK);
+
+        Carbon::setTestNow('2026-08-14 15:30:00');
+
+        $this->makeBook();
+
+        Livewire::actingAs($this->superAdmin())
+            ->test(ListTransactions::class)
+            ->callAction(TestAction::make('exportPdf'));
+
+        $path = ExportCashBook::DIRECTORY.'/buku-kas-2026-08-14-153000.pdf';
+
+        Storage::disk(ExportCashBook::DISK)->assertExists($path);
+
+        $this->assertStringStartsWith(
+            '%PDF-',
+            Storage::disk(ExportCashBook::DISK)->get($path),
+        );
     }
 
     /**
@@ -156,6 +334,8 @@ class TransactionExportTest extends TestCase
      */
     public function test_the_pdf_download_is_audited_under_the_same_event(): void
     {
+        Storage::fake(ExportCashBook::DISK);
+
         $admin = $this->superAdmin();
 
         $this->makeBook();

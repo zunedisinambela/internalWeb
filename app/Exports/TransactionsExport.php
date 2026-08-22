@@ -37,14 +37,20 @@ use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
  * App\Reports\CashBook, which the PDF report reads as well. This class only
  * decides how those figures reach a spreadsheet cell.
  *
- * ## Do not add ShouldQueue
+ * ## Do not add ShouldQueue — the export is still synchronous
  *
- * The balance accumulates in the CashBook as map() walks the rows. That holds
- * for a synchronous download, where one instance sees every row in order. A
- * queued export splits the chunks across jobs, each with its own instance
- * starting from zero — every chunk would restart the balance at its first row,
- * and the file would still look entirely plausible. If this ever has to be
- * queued, move the running total into a SQL window function first.
+ * The balance accumulates in the CashBook as map() walks the rows, so one
+ * instance has to see every row in order. Laravel-Excel's queueing splits the
+ * query into chunks and runs each in its own job with its own instance: every
+ * chunk would restart the balance at its first row, and the file would still
+ * look entirely plausible.
+ *
+ * The rendering *is* off the request now, and this is untouched by that.
+ * App\Jobs\ExportCashBook queues the whole render as one job and calls this
+ * class inside it — one job, one CashBook, one pass. That is the arrangement
+ * this concern needs, and adding ShouldQueue here would break it again from
+ * the inside. If the export itself ever has to chunk across jobs, move the
+ * running total into a SQL window function first.
  *
  * ## WithStrictNullComparison is load-bearing
  *

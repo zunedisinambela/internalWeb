@@ -12,6 +12,7 @@ vendor/bin/pint      # format; no pint.json, so Laravel preset defaults apply
 php artisan migrate:fresh --seed   # rebuild sqlite + seed admin user
 php artisan schedule:work          # NOT part of `composer dev` — see Monitoring
 php artisan monitoring:prune       # apply retention now instead of waiting for 03:00
+php artisan exports:prune          # delete finished cash book exports past their link expiry
 php artisan storage:link           # NOT part of `composer setup` — see Media
 ```
 
@@ -58,6 +59,13 @@ php artisan storage:link           # NOT part of `composer setup` — see Media
 - **maatwebsite/excel v4** on `phpoffice/phpspreadsheet` v5 — spreadsheet import and export,
   facade `Maatwebsite\Excel\Facades\Excel`. One export, on the cash book. **v4, not the
   3.1 line the search results and most tutorials still point at** — see Spreadsheet.
+- **The queue is load-bearing for one feature.** `QUEUE_CONNECTION=database`, and the cash book
+  export is rendered by `App\Jobs\ExportCashBook` rather than in the request — so a deploy
+  without `queue:work` produces no file, no notification and no error. The finished file is
+  announced through Filament's database notifications, which is why the panel calls
+  `->databaseNotifications()` and a `notifications` table exists. The **cache** store is
+  load-bearing there as well — the job is `ShouldBeUnique`, and that lock lives in the cache, so
+  `CACHE_STORE` has to be a store shared across processes. See Keuangan.
 - **Database is SQLite** (`database/database.sqlite`), gitignored via `database/.gitignore`.
   Tests run against `:memory:` (see `phpunit.xml`), so they never touch the dev database.
 - Frontend: Vite 8 + Tailwind 4. Filament ships its own compiled CSS/JS and does not go
@@ -144,6 +152,20 @@ by a role. It carries receipt photographs and meter photographs alike, serving t
 on a signed, expiring URL, so within that window the link works for whoever holds it, signed in
 or not. That is the weakest of the three gates by design; what it protects and what it does not
 are set out under Media.
+
+It carries one thing that is not an upload: a **rendered cash book export** is written to the
+same private disk and reached through the same signed link (see Keuangan). That is a heavier
+payload than a single receipt — one file is the whole filtered book — which is why its link and
+the file itself expire together on `ExportCashBook::RETENTION_HOURS` rather than living as long
+as the row that owns them.
+
+That export's link is also the one signed URL in this app that is **written down**. Every other
+one is minted per request and dies with the page; this one is baked into `notifications.data`
+as part of the action, because the notification has to still work when it is opened tomorrow.
+So for its lifetime the row is as good as the file: anyone who can read that table — a database
+dump, a backup, a future screen that renders notification payloads — holds a working link
+without passing a policy. `RETENTION_HOURS` is what bounds that, and it is the reason the value
+belongs in hours rather than days.
 
 **Managing users** — `/users` (`app/Filament/Resources/Users/`) creates accounts, sets
 usernames and passwords, and assigns roles. Both identifiers a user signs in with are set
@@ -290,7 +312,8 @@ there to keep them honest.
 | Totals | `Resources/Transactions/Widgets/TransactionOverview` |
 | Receipts | media collection `Transaction::RECEIPTS`, private `local` disk |
 | Ledger | `App\Reports\CashBook` — ordering, running balance and totals, shared by both exports |
-| Export | `Resources/Transactions/Actions/ExportTransactionsAction` — `excel()` and `pdf()` |
+| Export | `Resources/Transactions/Actions/ExportTransactionsAction` — `excel()` and `pdf()`, both dispatch |
+| Render | `App\Jobs\ExportCashBook` — off the request; writes the file, audits it, announces it |
 
 **Amounts are whole rupiah in an `unsignedBigInteger`, never a decimal.** SQLite has no real
 `DECIMAL` type: `decimal(15,2)` becomes NUMERIC affinity and comes back through PDO as a float,
@@ -428,8 +451,76 @@ Consequences worth keeping:
 - **Do not add `ShouldQueue` to `TransactionsExport`.** The balance accumulates as `map()` walks
   the rows. Queued chunks run in separate jobs with their own instance, so each chunk would
   restart the balance from zero — and the file would still look entirely plausible. Moving the
-  running total into a SQL window function is the prerequisite for queueing it.
+  running total into a SQL window function is the prerequisite for queueing it *that* way.
+  The render is nonetheless off the request — see below — because the whole of it is wrapped
+  in one job rather than chunked across several.
 - **`WithStrictNullComparison` is load-bearing, not decoration.** See Spreadsheet.
+
+**Both formats are rendered on the queue, and the action returns nothing.**
+`App\Jobs\ExportCashBook` does the work; `ExportTransactionsAction` only resolves the filtered
+set, dispatches, and says so. Five things follow from that, and each is a decision:
+
+- **The job carries ids, not the query.** An Eloquent builder holds a `Connection`, which holds
+  a PDO handle, and PDO refuses to serialize — dispatching one dies with
+  *"Serialization of 'PDO' is not allowed"*. Re-applying the filters inside the job is not
+  available either: they live on a Livewire component that no longer exists. So
+  `getFilteredTableQuery()` is resolved to primary keys at dispatch. The payload grows with the
+  book, and a row deleted between dispatch and render is simply absent from the file — the
+  honest outcome, the alternative being a file claiming a row that no longer exists.
+- **One job, one `CashBook`, one pass.** That is exactly the arrangement the synchronous
+  download had, which is why the running balance survives the move. Adding `ShouldQueue` to
+  `TransactionsExport` would break it again from the inside.
+- **Sending that notification is itself a queued job.** Filament's
+  `Notifications\DatabaseNotification` implements `ShouldQueue`, so `sendToDatabase()` hands off
+  to `SendQueuedNotifications` rather than inserting the row inline. It works, and it is a
+  seam: that job has its own retries and its own failure, outside
+  `ExportCashBook::failed()`. If it dies, the file exists, the audit entry exists, and nobody
+  is told. `$user->notifyNow(...)` is the one-line alternative, and it
+  trades that for making a failed insert fail the whole export.
+- **The finished file reaches the user as a database notification**, so the panel now enables
+  `->databaseNotifications()` and the `notifications` table exists. A flash message could not
+  work: the request that asked for the file has ended before the file exists. The notification
+  carries a signed `temporaryUrl()` onto the private `local` disk — the same protection a
+  receipt gets, with the same limit (see Media).
+- **The file expires with its link.** `ExportCashBook::RETENTION_HOURS` sets both the signature
+  expiry and the cutoff `App\Console\Commands\PruneExports` deletes on, scheduled hourly. One
+  constant for both on purpose: split them and you get either a live link to a deleted file, or
+  a copy of the book nothing will ever remove. It is deliberately *not* a setting on
+  `/monitoring`, unlike the monitoring retention, for that reason.
+- **One render per request, not one per click.** The job is `ShouldBeUnique`, keyed on
+  `userId:format:md5(sorted ids)` — who asked, in what format, over which rows. Keying on the
+  user and format alone would also swallow the legitimate case: filter the screen differently,
+  click again, and that export is silently discarded while the screen says it is being
+  processed. Including the row set means only a genuine repeat is refused, and *because* the key
+  is the request, the "sedang diproses" flash stays true for the dropped click too — which is
+  what makes it safe to drop it without telling anyone. Two details that fail silently if
+  changed: the ids are **sorted before hashing**, since the action calls `reorder()` and the
+  same set can come back in a different order, and `$uniqueFor = 900` is longer than
+  `$timeout = 600`, since a lock that expires mid-render lets the duplicate through and one that
+  never expires (the default `0`) wedges that row set forever if a worker is killed.
+
+  **The lock lives in the cache, so `CACHE_STORE` decides whether the guard works at all.**
+  `database` is what is set, and `file` or `redis` are equally fine — all three are shared
+  between the web process that dispatches and the worker that releases. A **per-process** store
+  is not: with `array`, every click is a fresh store that acquires cleanly, so the guard
+  silently does nothing while every test still passes (`phpunit.xml` pins `CACHE_STORE=array`,
+  and both dispatches in a test happen inside one process). That asymmetry is the trap — the
+  suite cannot see it.
+- **`$tries = 1`.** A retry would write a second file and a second `transactions_exported`
+  entry for one act, and rendering is deterministic — a failure is a bad query, a missing font
+  or an exhausted memory limit, none of which improve on a second attempt. `failed()` notifies
+  the user with a deliberately opaque message and puts the exception in the log; a notification
+  body is `sanitizeHtml()`ed rather than escaped (see Gotchas), and exception text carries SQL
+  and absolute paths.
+
+**The audit entry is written by the job, not the action**, once the file exists — `rowCount()`
+is accumulated by the fold and is not final until then. `causedBy()` is explicit there, because
+a queue worker has no authenticated user and the entry would otherwise name nobody.
+
+**No worker means no file and no error.** `QUEUE_CONNECTION=database`, so a deploy without
+`queue:work` leaves the job in the table, the notification never arrives, and nothing is logged
+— the same trap medialibrary conversions have under Media. `php artisan dev` runs
+`queue:listen`, so this only bites a deploy.
 
 Who may download either is `TransactionResource::canExport()`, which defers to `canViewAny()`:
 the files carry no column the table does not already show the same caller, so a separate gate
@@ -923,9 +1014,22 @@ user input is how a settings page becomes remote code execution. So the cutoffs 
 Null means keep forever. Activity log retention is blank by default on purpose — it holds the
 record of deletions made on the other two screens.
 
+**`notifications` is not on this screen and is not pruned.** It is not monitoring data — nobody
+is audited by it — so putting it under a retention meant for visits and sign-ins would be the
+wrong shape. What that costs is real, though: every export leaves a row behind forever, and each
+one carries a signed URL that stopped working after `ExportCashBook::RETENTION_HOURS` (see
+Access control). Filament's bell marks them read but never removes them, and
+`Illuminate\Notifications\DatabaseNotification` is a plain model — it does not use `Prunable`
+and defines no `prunable()` scope, so `model:prune` finds nothing to do. Cleaning it means
+either a subclass carrying that trait or a few lines in `PruneExports`, which already runs
+hourly and already knows the retention. Left out rather than decided against.
+
 **Nothing runs the schedule on its own.** `php artisan dev` starts `serve`, `queue:listen`,
 `pail` and `vite` — no scheduler. Without `php artisan schedule:work` locally, or the usual
-once-a-minute `schedule:run` cron on a server, retention is saved but never applied. The
+once-a-minute `schedule:run` cron on a server, retention is saved but never applied. Two
+commands are scheduled now, and they fail differently: `monitoring:prune` daily at 03:00, whose
+absence the settings page makes visible through `last_pruned_at`, and `exports:prune` hourly,
+whose absence is silent — exports keep working and their files simply never go. The
 settings page shows `last_pruned_at` for exactly this reason, and stamps it on every run
 including one that had nothing to do — otherwise a working scheduler with an empty table looks
 identical to no scheduler at all. There is a **Run now** action for applying it by hand.
@@ -1122,9 +1226,10 @@ Chrome, no `wkhtmltopdf`, nothing to install on the host. The cost is a renderer
 CSS 2.1 support: no flexbox, no grid, no modern layout. Build PDF Blade views with tables and
 floats, not with anything borrowed from the panel's Tailwind.
 
-One report exists: `resources/views/pdf/buku-kas.blade.php`, downloaded from the cash book list
-by `ExportTransactionsAction::pdf()`. No route serves a PDF; it is produced inside a Filament
-action.
+One report exists: `resources/views/pdf/buku-kas.blade.php`, asked for from the cash book list
+by `ExportTransactionsAction::pdf()`. No route serves a PDF, and since the render moved onto the
+queue no *response* carries one either: `App\Jobs\ExportCashBook` writes the bytes to the
+private disk and the user is handed a signed link. See Keuangan.
 
 ```php
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -1140,6 +1245,10 @@ a plain `Illuminate\Http\Response`, while Livewire's `SupportFileDownloads` only
 return path, where Livewire tries to JSON-encode the response object and throws
 **`Type is not supported`**. Hand back `response()->streamDownload(...)` instead. (Laravel-Excel
 is unaffected: its `download()` already returns a `BinaryFileResponse`.)
+
+The cash book no longer takes that route — it renders in a job and stores the bytes with
+`->output()`, so no response object is involved at all. The trap is recorded here anyway,
+because the next report written will start as a synchronous action and hit it.
 
 **dompdf has no `pages` counter, so `counter(pages)` silently prints `0`.** Nothing in its
 `src/` refers to one; only `counter(page)` resolves. The usual workaround, `$PAGE_COUNT`, lives
@@ -1241,9 +1350,10 @@ read `.env`.
 
 `maatwebsite/excel` v4.0.0, writing and reading through `phpoffice/phpspreadsheet` v5.
 
-One export exists: `App\Exports\TransactionsExport`, downloaded from the cash book list by
-`ExportTransactionsAction::excel()`. It renders `App\Reports\CashBook`, which the PDF report
-reads as well — see Keuangan. Nothing imports yet.
+One export exists: `App\Exports\TransactionsExport`, asked for from the cash book list by
+`ExportTransactionsAction::excel()` and rendered off the request by
+`App\Jobs\ExportCashBook`. It renders `App\Reports\CashBook`, which the PDF report reads as
+well — see Keuangan. Nothing imports yet.
 
 ```php
 use Maatwebsite\Excel\Facades\Excel;
@@ -1251,12 +1361,12 @@ use Maatwebsite\Excel\Facades\Excel;
 Excel::download(new LaporanExport, 'laporan.xlsx');   // or ->store('local', ...), ->raw(...)
 ```
 
-A Filament action can return the `BinaryFileResponse` that `download()` produces —
-Livewire's `SupportFileDownloads` intercepts a returned `BinaryFileResponse` or
-`StreamedResponse` and turns it into a browser download. Anything the action needs to do
-*about* the export (auditing, notifications) has to happen before that return, and the file is
-fully written by the time `download()` hands it back, so a count accumulated during the export
-is final at that point.
+A Filament action can return the `BinaryFileResponse` that `download()` produces — Livewire's
+`SupportFileDownloads` intercepts it and turns it into a browser download. **The cash book does
+not**: it renders in `App\Jobs\ExportCashBook` and stores through `Excel::store($export, $path,
+'local')`, so the action returns nothing and the file is announced afterwards. Either way the
+sheet is fully written by the time the call returns, so a count accumulated during the export —
+`CashBook::rowCount()` — is final at that point and can be audited from there.
 
 **`0` and `null` are the same value to `Worksheet::fromArray()`, and this bites twice.** It
 skips any cell equal to its `$nullValue`, comparing loosely — and `0 != null` is `false` in
@@ -1330,10 +1440,13 @@ before anything here writes a second format:
   time and covered by that directory's existing `.gitignore`. Exports larger than
   `chunk_size` (1000) stage there before being written.
 
-**A queued export needs a queue worker**, the same trap medialibrary conversions have under
-Media: `QUEUE_CONNECTION=database`, so an export implementing `ShouldQueue` returns a response
-immediately, writes nothing, logs nothing, and leaves jobs sitting in the table. `php artisan
-dev` runs `queue:listen`, so it only bites a deploy.
+**Anything queued needs a queue worker**, the same trap medialibrary conversions have under
+Media: `QUEUE_CONNECTION=database`, so without one the job sits in the table, nothing is
+written, and nothing is logged. `php artisan dev` runs `queue:listen`, so it only bites a
+deploy. That now applies to the cash book export, which is queued *as a whole job* — and note
+the distinction, because the two are not the same thing: `TransactionsExport` itself must never
+implement `ShouldQueue`, since laravel-excel would then chunk it across jobs and restart the
+running balance in each one. See Keuangan.
 
 **`FromQuery` needs a deterministic `ORDER BY`.** It paginates the query to chunk it, so a sort
 that ties — `occurred_at` on rows entered in the same minute, say — silently repeats and drops
@@ -1341,10 +1454,14 @@ records across page boundaries. Order by something unique, or add `id` as a tieb
 
 **An export is a read surface, so it is gated and audited.** A spreadsheet of records is a bulk
 read of data every screen in the panel gates by policy, and unlike a screen it leaves the
-building. `ExportTransactionsAction` is the worked example: authorization on the resource
-(`TransactionResource::canExport()`), an `activity()` entry under the `monitoring` log name with
-the row count, the format and the filters that were active, and `TransactionExportTest`
-asserting both. Copy that shape for the next one — nothing else can record a read, since no
+building. The cash book is the worked example, split across two classes now that the render is
+queued: authorization on the resource (`TransactionResource::canExport()`, checked in
+`ExportTransactionsAction` before anything is dispatched), and an `activity()` entry under the
+`monitoring` log name — written by `ExportCashBook` once the file exists, with the row count,
+the format and the filters that were active. `TransactionExportTest` asserts both. Two things
+that move with the audit call when a read goes onto the queue: the row count is not known until
+the render finishes, and `causedBy()` has to be passed explicitly because a worker has no
+authenticated user. Copy that shape for the next one — nothing else can record a read, since no
 model event fires.
 
 ## Gotchas
@@ -1553,9 +1670,10 @@ two-factor changes), `transaction`
 (cash book rows and receipt deletions — see Keuangan), `room`, `tariff` and `meter_reading`
 (the electricity feature and its photo deletions — see Listrik kost), `sale`, `sale_item`,
 `customer` and `product` (the Oriflame feature — see Oriflame), and `monitoring`
-(deletions, prunes, and the spreadsheet export — a read that leaves the panel is recorded
+(deletions, prunes, and both cash book exports — a read that leaves the panel is recorded
 here rather than under `transaction`, because it is an operation on the book rather than a
-change to it).
+change to it; the export entry is written by the queued job rather than by the request, so its
+causer is passed explicitly).
 Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 
 ## Filament conventions
@@ -1684,6 +1802,18 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   JSON-encode it, throwing **`Type is not supported`** — a message that names neither the
   action nor the response. `Excel::download()` already returns the right type;
   `Pdf::download()` does not, so wrap it in `response()->streamDownload(...)`. See PDF.
+  **An action that queues the render returns nothing at all**, which sidesteps this entirely —
+  and buys a different obligation: the request has ended before the file exists, so a flash
+  message can no longer deliver it. `ExportTransactionsAction` flashes "sedang diproses" and
+  `ExportCashBook` sends a database notification carrying a signed link. Dropping the second
+  half leaves a job that writes a file nobody is ever told about.
+- **A double click is guarded on the job, not on the button.** `->disabled()` after a click, a
+  `->requiresConfirmation()`, a spinner — none of them survive a second browser tab, a
+  double-submit, or a user who reloads and clicks again, and all of them are client state. The
+  server-side answer is `ShouldBeUnique` with a `uniqueId()` that describes the *request*, so a
+  genuine repeat is refused and a changed one is not. `ExportCashBook` is the worked example, and
+  the sharp edge is that a wrong key fails silently in both directions — too broad and it
+  discards legitimate work, too narrow and it guards nothing. See Keuangan.
 - **A hidden field is not saved.** `->hidden()` / `->visible(false)` makes `isDehydrated()`
   return false, and the component's state path is stripped from the payload — so a field hidden
   to tidy a form silently stops writing its column. Pair it with `->dehydratedWhenHidden()`
@@ -1712,7 +1842,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 ## Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-277 tests at the last count.
+283 tests at the last count.
 
 | File | Locks in |
 |------|----------|
@@ -1726,7 +1856,7 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 | `MonitoringRetentionTest` | retention saves, blank means forever, prune scope and summary |
 | `TwoFactorAuthenticationTest` | password alone is refused, valid code passes, secret never leaks, three audit events, admin reset |
 | `TransactionResourceTest` | policy gating, integer rupiah and what a fractional amount costs, grouped input round-trips and an ambiguous one is left alone, `occurred_at` default, receipts stay private and unsigned reads are refused, receipt / cascade / bulk delete auditing |
-| `TransactionExportTest` | who may download the book, the two-column ledger and its running balance, chronological order regardless of the table sort, filters carry over, amounts and dates are values rather than text, `0` prints while a blank side stays empty, both formats download and audit under one event, the PDF escapes user text and signs a negative balance readably, an empty book still renders |
+| `TransactionExportTest` | who may download the book, the two-column ledger and its running balance, chronological order regardless of the table sort, filters carry over, amounts and dates are values rather than text, `0` prints while a blank side stays empty, **both formats queue rather than download** and the job carries the filtered ids and a name stamped at dispatch, the rendered file lands on the private disk and is announced by a database notification, a second click on the same screen queues nothing while a different row set or format still does, the same rows in a different order are one request, an expired file is pruned while a fresh one is kept, both formats audit under one event, the PDF escapes user text and signs a negative balance readably, an empty book still renders |
 | `RoomResourceTest` | policy gating, a room with readings cannot be deleted from the resource *or* the database, deactivation keeps its readings, latest-reading ordering and its `id` tiebreak, occupant changes audited, bulk delete audited per row |
 | `ElectricityTariffTest` | policy gating, the rate in force is the latest that has started, a scheduled rate stays out until its date, an empty table has no rate, two tariffs cannot share a date, author stamped, grouped input round-trips, rate changes audited |
 | `MeterReadingResourceTest` | policy gating, usage and total derived from stored figures, **a later tariff does not change a recorded reading**, the rate field is hidden on both form screens yet still copied onto the row, shown only when there is no tariff, editing does not re-copy the current tariff, **the refresh-rate button fills the form without saving** and only commits through Simpan, takes the tariff in force when the period closed rather than the newest one, hides itself when the rate already matches or no tariff had taken effect, and escapes the tariff note in its confirmation, the form prefills the rate in force and both ends of the previous reading, a room with no history keeps the default opening moment, a closing figure below the opening one is refused, a closing moment before the opening one is refused while an equal one is accepted, author stamped, both reading moments default to now, the create button waits for a room, a photo belongs to the end it was uploaded against, photos stay private and unsigned reads are refused, photo / cascade / bulk delete auditing |
@@ -1742,6 +1872,10 @@ zipstream — by far the heaviest thing here. Past roughly two hundred tests it 
 PHP's 128M default, and the failure is a fatal error *inside zipstream* with no assertion
 attached: it reads as a broken export rather than as a memory ceiling. Lower it back and the
 next test file added rediscovers that the hard way.
+
+**A faked disk proves the file landed, not that its link works.** The export tests assert
+`Storage::disk('local')->assertExists('exports/…')`; the signed URL the notification carries is
+only exercised against the real disk, for the reason in the next paragraph.
 
 **`Storage::fake()` cannot test signed URLs.** It replaces the disk's temporary-URL builder with
 a stub returning `URL::to($path.'?expiration=…')` — no signature, no `/storage` prefix — so a
@@ -1769,11 +1903,25 @@ the interesting assertions possible at all: `getValue()` proves an amount is an 
 than a formatted string, and `getStyle(...)->getNumberFormat()->getFormatCode()` proves the
 rupiah is a display format rather than part of the data.
 
-The download itself is a separate concern and tested through Livewire:
-`->callAction(TestAction::make('export'))->assertFileDownloaded('buku-kas-….xlsx')`. Freeze the
-clock with `Carbon::setTestNow()` first, since the file name carries a timestamp.
-`Excel::fake()` with `assertDownloaded()` is the other route, and it checks that an export was
-dispatched rather than what ended up in the cells.
+**The delivery is a separate concern, and `assertFileDownloaded()` no longer applies** — the
+action queues the render and returns nothing. Two halves, tested apart:
+
+- **What was asked for.** `Bus::fake()`, then `Bus::assertDispatched(ExportCashBook::class, …)`
+  reading the job's public readonly `ids`, `format` and `fileName`. Freeze the clock with
+  `Carbon::setTestNow()` first, since the name carries a timestamp stamped at dispatch.
+- **Whether it was asked for twice.** `Bus::fake()` does *not* bypass the uniqueness lock:
+  `PendingDispatch::shouldDispatch()` acquires it before the dispatcher is reached at all, so
+  `Bus::assertDispatchedTimes(…, 1)` is a genuine assertion about the guard rather than a count
+  of calls. The lock is per-process cache state, which is why these tests work at all under
+  `CACHE_STORE=array` — and why they cannot catch a deploy that sets the same value. See
+  Keuangan.
+- **What came out.** `QUEUE_CONNECTION` is `sync` in `phpunit.xml`, so without `Bus::fake()` the
+  job simply runs inside `callAction()` — which is what lets the audit assertions stay as they
+  were. Pair that with `Storage::fake('local')` or the suite writes real spreadsheets into
+  `storage/app/private/exports` and leaves them there.
+
+`Excel::fake()` with `assertDownloaded()` is not the route here: it asserts an export was
+dispatched rather than what ended up in the cells, and the export is no longer downloaded.
 
 `Tests\TestCase` provides `userWithRole()`, `superAdmin()` and `seedRoles()`. Roles come from
 `ShieldSeeder` so tests exercise the same data a deploy produces, and the permission cache is
