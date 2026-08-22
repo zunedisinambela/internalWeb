@@ -17,6 +17,10 @@ class CustomerFactory extends Factory
         return [
             'name' => fake()->name(),
             'phone' => fake()->numerify('08##########'),
+            // Null by default: most customers are handed their order rather than
+            // posted it, and a factory that always filled an address would hide
+            // a form that quietly required one.
+            'address' => null,
             'is_active' => true,
             'note' => null,
         ];
@@ -25,6 +29,11 @@ class CustomerFactory extends Factory
     public function inactive(): static
     {
         return $this->state(fn (): array => ['is_active' => false]);
+    }
+
+    public function at(string $address): static
+    {
+        return $this->state(fn (): array => ['address' => $address]);
     }
 
     public function named(string $name): static

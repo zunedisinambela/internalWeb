@@ -30,6 +30,16 @@ class CustomerInfolist
                             ->label('Aktif')
                             ->boolean(),
 
+                        // The line breaks the user typed are the address's
+                        // structure, so they are preserved rather than collapsed
+                        // into one run of text.
+                        TextEntry::make('address')
+                            ->label('Alamat lengkap')
+                            ->placeholder('—')
+                            ->copyable()
+                            ->columnSpanFull()
+                            ->extraAttributes(['style' => 'white-space: pre-line']),
+
                         TextEntry::make('note')
                             ->label('Catatan')
                             ->placeholder('—')

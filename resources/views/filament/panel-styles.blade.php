@@ -67,12 +67,33 @@
         }
 
         /*
-         * TODO(tuning): 48rem is a guess at "one cash book row, readable".
-         * Per-table overrides go on the resource's page wrapper if a screen
-         * needs a different floor — a room list is narrower than a sale.
+         * 48rem is "one cash book row, readable" — four columns and a row of
+         * actions. It is a floor, not a width: a table with fewer columns still
+         * fills the viewport and never scrolls.
+         *
+         * Per-table overrides set the variable on the page wrapper rather than
+         * restating the rule. Filament's resource pages carry a
+         * `fi-resource-{slug}` class (ListRecords::getPageClasses()), so the slug
+         * is the selector and no PHP has to change to add one.
          */
         .fi-ta-table {
             min-width: var(--fi-ta-mobile-min-width, 48rem);
+        }
+
+        /*
+         * A sale is the widest row in the panel: a date, a customer and *three*
+         * rupiah figures plus the derived margin, where the cash book has one
+         * amount. At the 48rem floor each of those gets about 6rem, so
+         * "Rp 1.500.000" wraps onto two lines and the column of figures stops
+         * being scannable — which is the failure this floor exists to prevent,
+         * arriving one table later.
+         *
+         * The customer list is left at the default deliberately: four columns
+         * visible, and raising its floor would introduce a swipe for a table
+         * that fits.
+         */
+        .fi-resource-sales {
+            --fi-ta-mobile-min-width: 62rem;
         }
     }
 </style>

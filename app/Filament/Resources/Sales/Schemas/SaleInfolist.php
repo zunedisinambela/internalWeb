@@ -7,6 +7,8 @@ use Filament\Infolists\Components\SpatieMediaLibraryImageEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
+use Spatie\MediaLibrary\MediaCollections\Models\Media;
+use Throwable;
 
 class SaleInfolist
 {
@@ -110,7 +112,65 @@ class SaleInfolist
             // call in SaleForm.
             ->visibility('private')
             ->height(160)
-            ->placeholder('Tidak ada berkas terlampir');
+            ->placeholder('Tidak ada berkas terlampir')
+            // Marks the wrapper the lightbox script attaches to. Every <a>
+            // inside it becomes one slide, so a payment split across two
+            // transfers is paged through rather than opened one at a time.
+            //
+            // The collection name is the group key rather than a shared
+            // constant: the two entries sit side by side in one Section, and a
+            // single key would page from a transfer receipt straight into a
+            // courier resi — which is exactly the pairing two collections exist
+            // to keep apart.
+            ->extraAttributes(['data-lightbox' => $collection])
+            // A closure taking `state` is what makes the URL per-image:
+            // CanOpenUrl::hasStateBasedUrls() looks for that parameter by name,
+            // and without it every thumbnail would link to the same file. The
+            // state is the media uuid.
+            ->url(fn (?string $state, Sale $record): ?string => self::attachmentUrl($state, $record));
+    }
+
+    /**
+     * A signed, expiring link to one attachment's original file.
+     *
+     * The entry renders the `thumb` conversion, which is downscaled — zooming
+     * into that defeats the point, and a resi is read for its tracking number.
+     * So this returns the original, which is also the EXIF-bearing copy:
+     * reaching it is meant to take a deliberate signed request, which a click
+     * is. See the Media section of CLAUDE.md.
+     *
+     * The expiry mirrors SpatieMediaLibraryImageEntry::getImageUrl() rather than
+     * inventing its own, so a thumbnail and the file behind it stop working at
+     * the same moment instead of one outliving the other.
+     *
+     * The uuid is matched against the whole media relation rather than one
+     * collection: uuids are unique per row, and the entry only ever hands over
+     * a uuid it rendered itself.
+     */
+    private static function attachmentUrl(?string $uuid, Sale $record): ?string
+    {
+        if (blank($uuid)) {
+            return null;
+        }
+
+        /** @var ?Media $media */
+        $media = $record->getRelationValue('media')
+            ->first(fn (Media $media): bool => $media->uuid === $uuid);
+
+        if (! $media) {
+            return null;
+        }
+
+        try {
+            return $media->getTemporaryUrl(
+                now()->addMinutes(config('filament.temporary_file_url_expiry_minutes', 30))->endOfHour(),
+            );
+        } catch (Throwable) {
+            // The disk cannot sign URLs. Falling through to the plain URL keeps
+            // the link working on a public disk; on the private one it is
+            // refused by ServeFile, which is the correct outcome.
+            return $media->getAvailableUrl([]);
+        }
     }
 
     /**

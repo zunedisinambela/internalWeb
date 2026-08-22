@@ -568,6 +568,75 @@ class SaleResourceTest extends TestCase
     }
 
     /**
+     * The wide-table floor is keyed on the resource slug, which is derived from
+     * the model name rather than written down. Rename the resource and the CSS
+     * in panel-styles.blade.php stops matching anything — no error, and the
+     * symptom is a table that squeezes its rupiah columns on a phone months
+     * later. Both halves are asserted against one rendered page so neither can
+     * move on its own.
+     */
+    public function test_the_sales_list_carries_the_class_its_table_floor_is_keyed_on(): void
+    {
+        $html = $this->actingAs($this->superAdmin())
+            ->get('/sales')
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringContainsString('fi-resource-sales', $html);
+        $this->assertStringContainsString('.fi-resource-sales {', $html);
+        $this->assertStringContainsString('--fi-ta-mobile-min-width', $html);
+    }
+
+    /**
+     * The lightbox opt-in, both halves of it.
+     *
+     * SpatieMediaLibraryImageEntry only wraps each image in its own <a> when
+     * ->url() is given a closure declaring a parameter named `state` —
+     * CanOpenUrl::hasStateBasedUrls() looks it up by name. Rename it and every
+     * thumbnail links to the same file while the screen still renders perfectly,
+     * which is why two files are attached to one collection here: with one, the
+     * broken reading and the correct one produce identical HTML.
+     *
+     * The two wrappers carry different keys on purpose. The script pages through
+     * every <a> inside one `data-lightbox` element, so a shared key would page
+     * from a transfer receipt straight into a courier resi — the pairing two
+     * collections exist to keep apart.
+     */
+    public function test_each_attachment_is_its_own_link_on_the_view_screen(): void
+    {
+        Storage::fake('local');
+
+        $sale = Sale::factory()->create();
+
+        foreach (['transfer-satu.jpg', 'transfer-dua.jpg'] as $name) {
+            $sale->addMedia(UploadedFile::fake()->image($name))
+                ->toMediaCollection(Sale::PAYMENT_PROOFS);
+        }
+
+        $sale->addMedia(UploadedFile::fake()->image('resi.jpg'))
+            ->toMediaCollection(Sale::SHIPPING_PROOFS);
+
+        $html = $this->actingAs($this->superAdmin())
+            ->get('/sales/'.$sale->getKey())
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringContainsString('data-lightbox="'.Sale::PAYMENT_PROOFS.'"', $html);
+        $this->assertStringContainsString('data-lightbox="'.Sale::SHIPPING_PROOFS.'"', $html);
+
+        $hrefs = collect($sale->refresh()->getMedia(Sale::PAYMENT_PROOFS))
+            ->map(fn ($media): string => $media->getTemporaryUrl(now()->addMinutes(30)->endOfHour()))
+            ->all();
+
+        $this->assertCount(2, $hrefs);
+        $this->assertNotSame($hrefs[0], $hrefs[1], 'The two transfer receipts resolved to one URL.');
+
+        foreach ($hrefs as $href) {
+            $this->assertStringContainsString(e($href), $html);
+        }
+    }
+
+    /**
      * Attachments are a relation, so LogsActivity cannot see them. Removing the
      * proof that an order was paid for is exactly what an audit trail is for —
      * the same split LogRoleChange makes for roles.

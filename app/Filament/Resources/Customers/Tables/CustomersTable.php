@@ -48,6 +48,23 @@ class CustomersTable
                     ->boolean()
                     ->sortable(),
 
+                // Hidden by default and still searchable, which is not a
+                // contradiction: applyGlobalSearchToTableQuery() skips a column
+                // only for isHidden() — the ->hidden()/->visible() API — and
+                // never for the column-manager toggle. So the address is
+                // findable without spending the width of the list on it, which
+                // is the one column here that would need a whole row to itself.
+                // test_an_address_is_searchable_while_its_column_is_hidden pins
+                // that, since it rests on vendor internals rather than on a
+                // documented promise.
+                TextColumn::make('address')
+                    ->label('Alamat')
+                    ->searchable()
+                    ->placeholder('—')
+                    ->limit(40)
+                    ->wrap()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
                 TextColumn::make('note')
                     ->label('Catatan')
                     ->placeholder('—')

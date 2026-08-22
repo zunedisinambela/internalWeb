@@ -31,6 +31,7 @@ class Customer extends Model
     protected $fillable = [
         'name',
         'phone',
+        'address',
         'is_active',
         'note',
     ];
@@ -88,11 +89,18 @@ class Customer extends Model
      * `phone` is a personal detail rather than a business figure, and it is on
      * the list deliberately: a number changed on the wrong row is how a message
      * about an order reaches the wrong person.
+     *
+     * `address` is on it for the same reason and at a higher cost: a parcel
+     * posted to a stale address is lost rather than merely misdirected, so the
+     * previous value has to be recoverable. The cost is that activity_log then
+     * holds home addresses, and its own retention is blank by default — see
+     * Monitoring. Anyone holding ViewAny:Activity can read them there without
+     * passing the customer policy.
      */
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()
-            ->logOnly(['name', 'phone', 'is_active', 'note'])
+            ->logOnly(['name', 'phone', 'address', 'is_active', 'note'])
             ->logOnlyDirty()
             ->dontLogEmptyChanges()
             ->useLogName('customer');

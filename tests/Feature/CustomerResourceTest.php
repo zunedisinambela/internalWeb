@@ -159,6 +159,80 @@ class CustomerResourceTest extends TestCase
     }
 
     /**
+     * The address is where a parcel goes, so a stale one loses it rather than
+     * merely misdirecting a message. It is on the LogsActivity allowlist beside
+     * `phone` for that reason, and the cost is named in Customer's docblock:
+     * activity_log then holds home addresses.
+     */
+    public function test_an_address_change_is_audited(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $customer = Customer::factory()->at('Jl. Mawar No. 1, RT 02/RW 03, Sukajadi, Bandung 40161')->create();
+        $customer->update(['address' => 'Jl. Melati No. 9, RT 01/RW 04, Cicendo, Bandung 40172']);
+
+        $entry = Activity::query()->where('log_name', 'customer')->latest('id')->first();
+
+        $this->assertNotNull($entry);
+        $this->assertStringContainsString('Mawar', $entry->attribute_changes['old']['address']);
+        $this->assertStringContainsString('Melati', $entry->attribute_changes['attributes']['address']);
+    }
+
+    /**
+     * A full address needs a row to itself, so its column is toggled off by
+     * default — and it stays searchable anyway.
+     *
+     * That rests on a vendor internal rather than a documented promise:
+     * CanSearchRecords::applyGlobalSearchToTableQuery() skips a column for
+     * isHidden(), which is the ->hidden()/->visible() API, and never consults
+     * isToggledHidden(). If that ever changes, searching for a street stops
+     * finding anybody and nothing else in the suite notices.
+     */
+    public function test_an_address_is_searchable_while_its_column_is_hidden(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $atHome = Customer::factory()->named('Zunedi')->at('Jl. Kenanga No. 7, Sukajadi, Bandung')->create();
+        $elsewhere = Customer::factory()->named('Ayu')->at('Jl. Anggrek No. 2, Cicendo, Bandung')->create();
+
+        // Not assertTableColumnHidden(): that asserts isHidden(), which is the
+        // very distinction this test is about. The column being toggled off is
+        // asserted by its content being absent from the rendered list instead.
+        Livewire::test(ListCustomers::class)
+            ->assertCanSeeTableRecords([$atHome, $elsewhere])
+            ->assertDontSee('Kenanga');
+
+        // Searched separately, because the search term is bound to the input and
+        // so appears in the markup of the searched page either way.
+        Livewire::test(ListCustomers::class)
+            ->searchTable('Kenanga')
+            ->assertCanSeeTableRecords([$atHome])
+            ->assertCanNotSeeTableRecords([$elsewhere]);
+    }
+
+    /**
+     * The column is `text`, not `string`, because a full Indonesian address runs
+     * past 255 characters and a VARCHAR would truncate it without raising
+     * anything on a database that is not in strict mode. SQLite enforces no
+     * length at all, so this asserts the round trip rather than the column type
+     * — what it really guards is a later migration quietly narrowing it.
+     */
+    public function test_a_long_address_survives_the_round_trip(): void
+    {
+        $address = 'Jl. Raya Pajajaran Blok C2 No. 148, RT 007/RW 012, Kelurahan Sukajadi, '
+            .'Kecamatan Cicendo, Kota Bandung, Jawa Barat 40161, patokan seberang minimarket '
+            .'dua ratus meter sesudah pertigaan, sebelah bengkel motor yang catnya biru, '
+            .'rumah pagar hijau paling ujung, titipkan ke tetangga sebelah kanan bila tidak '
+            .'ada orang di rumah pada jam kerja';
+
+        $this->assertGreaterThan(255, strlen($address));
+
+        $customer = Customer::factory()->at($address)->create();
+
+        $this->assertSame($address, $customer->fresh()->address);
+    }
+
+    /**
      * Pinned to per-record deletes so each removal is consulted against
      * canDelete() and writes its own entry, rather than the whole selection
      * going down in one query the foreign key would refuse halfway through.

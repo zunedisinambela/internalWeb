@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Customers\Schemas;
 
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Schemas\Components\Section;
@@ -30,6 +31,17 @@ class CustomerForm
                             // people can share a phone, and most orders arrive
                             // from a chat where the number is already saved.
                             ->helperText('Opsional. Untuk menghubungi soal pesanan.'),
+
+                        // Textarea rather than TextInput, and no maxLength: the
+                        // column is `text` precisely because a full address runs
+                        // past 255 characters, so a cap here would refuse what
+                        // the row can hold. It is where the parcel goes, so it
+                        // is read back line by line rather than scanned.
+                        Textarea::make('address')
+                            ->label('Alamat lengkap')
+                            ->rows(3)
+                            ->columnSpanFull()
+                            ->helperText('Opsional. Alamat pengiriman: jalan, RT/RW, kelurahan, kecamatan, kota dan kode pos.'),
 
                         Toggle::make('is_active')
                             ->label('Pelanggan aktif')

@@ -156,9 +156,18 @@ it staging and every other environment serve log contents to anonymous visitors.
 by a role. It carries receipt photographs, meter photographs and a sale's transfer receipts and
 courier resi alike, serving the private disk on a signed, expiring URL, so within that window
 the link works for whoever holds it, signed in or not. The last of those is worth naming
-separately: a resi carries the customer's home address, which is the only personal address this
-app stores anywhere. That is the weakest of the three gates by design; what it protects and what it does not
+separately: a resi carries the customer's home address in a form nothing can redact — it is a
+photograph. That is the weakest of the three gates by design; what it protects and what it does not
 are set out under Media.
+
+**Home addresses are now held in three places, not one.** `customers.address` is the readable
+copy, gated by the customer policy like any other column; a resi is the photographed copy behind
+the signed link above; and `activity_log` holds every previous value, because `address` is on the
+Customer allowlist (see Oriflame for why). The third is the loosest: activity-log retention is
+blank by default (see Monitoring), and `ViewAny:Activity` is a different permission from
+`ViewAny:Customer` — so a role given the log but not the customer list can still read where
+people live. Nothing today grants that combination; it is a shape to check before a staff role
+is added.
 
 It carries one thing that is not an upload: a **rendered cash book export** is written to the
 same private disk and reached through the same signed link (see Keuangan). That is a heavier
@@ -876,7 +885,9 @@ drop zones out side by side so uploading a resi against the payment field takes 
 mistake rather than a careless one.
 
 **They are on the private disk**, and there is nothing optional about it here: a transfer
-receipt carries a bank account number and a name, a resi carries the customer's home address.
+receipt carries a bank account number and a name, a resi carries the customer's home address —
+the same address `customers.address` now holds as text, except that a photograph cannot be
+redacted, corrected or searched, only shown or withheld.
 `registerMediaCollections()` pins `->useDisk('local')`, and all three Filament components that
 render one set `->visibility('private')` — drop it from any one of them and that surface
 silently renders broken images with nothing in the log. Each of the three is built from a
@@ -889,8 +900,40 @@ it survives a deploy with no queue worker, and being re-encoded it drops almost 
 That second reason is weaker here than on a meter photograph — a transfer receipt is usually a
 screenshot — but a resi photographed at the counter is not. See Gotchas.
 
-There is **no lightbox** on these, unlike the cash book's receipts. Opting in is two calls on the
-entry (see Media), and it was left out rather than decided against.
+**Both are opened full size by clicking**, the same lightbox the cash book's receipts use — two
+calls on the entry, and `SaleInfolist::attachments()` carries them for both collections. The two
+wrappers take **different** `data-lightbox` keys, `payment-proofs` and `shipping-proofs`: the
+script pages through every `<a>` inside one marked element, so a shared key would page from a
+transfer receipt straight into a courier resi — the pairing two collections exist to keep apart.
+The `href` is a signed link to the **original**, not to the thumbnail, which is what makes a
+resi's tracking number readable and is also the EXIF-bearing copy. See Media, and see Gotchas
+for what a resi photographed at the counter carries.
+`test_each_attachment_is_its_own_link_on_the_view_screen` attaches **two** files to one
+collection deliberately: with one, a `->url()` closure that lost its `state` parameter renders
+identical HTML and the test passes anyway.
+
+**The address is a `text` column, and the form follows from that.** A full Indonesian address —
+jalan, RT/RW, kelurahan, kecamatan, kota, kode pos, plus the patokan people actually navigate by
+— runs past the 255 characters a `string` would give it, and the overflow is silent on a database
+that is not in strict mode. SQLite enforces no length at all, so the local suite could never
+catch it: `test_a_long_address_survives_the_round_trip` asserts the round trip rather than the
+column type, which really guards against a later migration narrowing it. The field is a
+`Textarea` with no `maxLength` for the same reason — a cap there would refuse what the row can
+hold — and the infolist renders it `white-space: pre-line`, because the line breaks somebody
+typed *are* the address's structure. That is `->extraAttributes(['style' => …])`, a CSS
+declaration on the wrapper — not `HtmlString` and not a raw echo, so the value stays escaped.
+Reaching for markup to get those line breaks is the trap the escaping table under Gotchas
+describes, and this is a field where the text is somebody's home address.
+
+**Its column is toggled off by default and still searchable.** Not a contradiction:
+`CanSearchRecords::applyGlobalSearchToTableQuery()` skips a column for `isHidden()` — the
+`->hidden()` / `->visible()` API — and never consults `isToggledHidden()`, so the column manager
+takes it off the list without taking it out of the search. It is the one column here that would
+need a row to itself, and looking a customer up by street is a real question, so both are had at
+once. It rests on a vendor internal rather than a documented promise, which is why
+`test_an_address_is_searchable_while_its_column_is_hidden` pins it — and why that test asserts
+the content is absent from the rendered list rather than calling `assertTableColumnHidden()`,
+which asserts `isHidden()` and would be testing the opposite thing.
 
 **Customers are retired, not deleted.** `sales.customer_id` is `restrictOnDelete`, so
 `is_active` is the exit. The rule is enforced twice on purpose, exactly as it is for rooms:
@@ -937,13 +980,16 @@ lines were machinery for a question nobody was asking. Three things follow.
 |--------|-------------|
 | `customer_id`, `occurred_at`, all three figures, `note` on a sale | `LogsActivity`, log name `sale` |
 | an attachment removed, from either collection | `AppServiceProvider::registerMediaDeletionLogging()`, event `sale_attachment_deleted` |
-| a customer's name, phone or status | `LogsActivity`, log name `customer` |
+| a customer's name, phone, address or status | `LogsActivity`, log name `customer` |
 | an attachment added or replaced | **nothing** |
 
 All three figures are on the `sale` allowlist deliberately: they are the whole record of the
 order, so a margin that reads differently today than it did last month is only explicable from
 the log. `phone` is on the `customer` allowlist for a different reason — a number changed on the
-wrong row is how a message about an order reaches the wrong person.
+wrong row is how a message about an order reaches the wrong person — and `address` for the same
+reason at a higher cost: a parcel sent to a stale address is lost rather than merely misdirected,
+so the previous value has to stay recoverable. What that costs is in Access control: the log then
+holds home addresses, under a permission of its own and a retention that is blank by default.
 
 Attachments are a relation, so `LogsActivity` cannot see them — the same split `LogRoleChange`
 makes for roles. Both collections write the **same** event key: which one lost the file is
@@ -1291,10 +1337,15 @@ The `href` stays a real link and the script only intercepts an unmodified click,
 failure degrades to opening the file rather than to a dead thumbnail, and a ctrl- or
 cmd-click still opens a tab.
 
-**It is on the transaction view screen only.** Neither the meter readings nor the Oriflame
-sales opted in, and both were left out rather than decided against — the two calls are cheap,
-but the `href` points at the EXIF-bearing original, which is a different trade-off for a meter
-bolted to a building than for a receipt.
+**Two view screens use it: the cash book's and the Oriflame sale's.** The meter readings did
+not opt in, and that is left rather than decided — the two calls are cheap, but the `href`
+points at the EXIF-bearing original, which is a different trade-off for a meter bolted to a
+building than for a receipt or a transfer slip.
+
+**A screen with more than one collection needs a key per collection**, not one for the screen.
+The script treats every `<a>` inside one `data-lightbox` element as a slide of the same set, so
+sharing a key silently merges two kinds of evidence into one strip. `SaleInfolist` passes the
+collection name; see Oriflame.
 
 The `Bukti` column on the cash book *list* (`TransactionsTable`) is not wired up either, for an
 unrelated reason: the cell sits inside a row that has its own click behaviour, and which of the
@@ -1568,9 +1619,9 @@ usually a screenshot and carries nothing, while a resi photographed at the count
 wherever that counter was.
 
 **User-typed text reaches three kinds of surface, and each escapes differently.** A transaction
-description, a room's occupant, a tariff note and a sale note are all free text somebody typed
-into a form. Verified against the vendor source rather than assumed, because the three do
-not behave alike:
+description, a room's occupant, a tariff note, a sale note and a customer's address are all free
+text somebody typed into a form. Verified against the vendor source rather than assumed, because
+the three do not behave alike:
 
 | Surface | What actually happens |
 |---------|-----------------------|
@@ -1879,6 +1930,10 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   `->visibility('private')`, produces a broken image and nothing in the log when it goes missing
   from one copy, so a second copy is a second chance to lose it silently. Six call sites across
   two features, two helpers — not six chances.
+  The helper is also where a per-collection *difference* belongs, rather than an argument against
+  one: `SaleInfolist::attachments()` derives each entry's `data-lightbox` key from the collection
+  it was handed, so the two evidence strips stay separate viewers without either call being
+  written out twice. See Media.
 - **An action that returns a download must return a `BinaryFileResponse` or a
   `StreamedResponse`.** Livewire's `SupportFileDownloads` intercepts exactly those two; any
   other response object falls through to the ordinary return path and Livewire tries to
@@ -1983,6 +2038,16 @@ What it does and does not do is worth knowing before reaching for it again:
   of the table becomes the browser's back gesture, and the reader loses the page while trying
   to see the last column.
 
+**One per-table override exists.** `.fi-resource-sales` sets
+`--fi-ta-mobile-min-width: 62rem`, because a sale carries three rupiah figures plus the derived
+margin where the cash book carries one amount — at 48rem each gets about 6rem and
+`Rp 1.500.000` wraps. The selector is Filament's own `fi-resource-{slug}` page class
+(`ListRecords::getPageClasses()`), so a per-table floor needs no PHP. That also makes it silent
+to break: the slug is derived from the model name, so renaming the resource leaves CSS matching
+nothing. `SaleResourceTest::test_the_sales_list_carries_the_class_its_table_floor_is_keyed_on`
+asserts the class and the rule against one rendered page. The customer list is left at the
+default — four columns visible, and a floor there would add a swipe to a table that fits.
+
 The complementary lever is `->visibleFrom('lg')` on low-value columns, which shortens the
 swipe. Note it is **not** `toggleable()` — a column hidden that way cannot be brought back from
 the column-manager button on a narrow screen, so it suits columns that are never read on a
@@ -1991,7 +2056,7 @@ phone rather than ones that are occasionally wanted.
 ## Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-273 tests at the last count.
+278 tests at the last count.
 
 | File | Locks in |
 |------|----------|
@@ -2009,8 +2074,8 @@ phone rather than ones that are occasionally wanted.
 | `RoomResourceTest` | policy gating, a room with readings cannot be deleted from the resource *or* the database, deactivation keeps its readings, latest-reading ordering and its `id` tiebreak, occupant changes audited, bulk delete audited per row |
 | `ElectricityTariffTest` | policy gating, the rate in force is the latest that has started, a scheduled rate stays out until its date, an empty table has no rate, two tariffs cannot share a date, author stamped, grouped input round-trips, rate changes audited |
 | `MeterReadingResourceTest` | policy gating, usage and total derived from stored figures, **a later tariff does not change a recorded reading**, the rate field is hidden on both form screens yet still copied onto the row, shown only when there is no tariff, editing does not re-copy the current tariff, **the refresh-rate button fills the form without saving** and only commits through Simpan, takes the tariff in force when the period closed rather than the newest one, hides itself when the rate already matches or no tariff had taken effect, and escapes the tariff note in its confirmation, the form prefills the rate in force and both ends of the previous reading, a room with no history keeps the default opening moment, a closing figure below the opening one is refused, a closing moment before the opening one is refused while an equal one is accepted, author stamped, both reading moments default to now, the create button waits for a room, a photo belongs to the end it was uploaded against, photos stay private and unsigned reads are refused, photo / cascade / bulk delete auditing |
-| `SaleResourceTest` | policy gating, the margin derived from the three stored figures, **ongkir is a cost to the consultant rather than a charge to the customer**, grouped input round-trips into integer columns, a zero ongkir is accepted while a zero price is still refused, a marketing price above the catalogue price is refused while an equal one is accepted, a negative margin reported rather than clamped, author stamped, the date defaults to now and ongkir to zero, the create button waits for a customer, price corrections audited, nothing outside the allowlist is logged, one `deleted` entry per sale, attachments uploaded on the create form reach their collections, attachments land on the private disk and an unsigned read is refused, a file belongs to the collection it was uploaded against, a collection holds more than one file, every screen renders with one attached, attachment / cascade delete auditing |
-| `CustomerResourceTest` | policy gating, totals summed across every sale with ongkir out of what the customer paid, a customer with no sales totals zero, a customer with sales cannot be deleted from the resource *or* the database, deactivation keeps their sales, phone changes audited, bulk delete audited per row |
+| `SaleResourceTest` | policy gating, the margin derived from the three stored figures, **ongkir is a cost to the consultant rather than a charge to the customer**, grouped input round-trips into integer columns, a zero ongkir is accepted while a zero price is still refused, a marketing price above the catalogue price is refused while an equal one is accepted, a negative margin reported rather than clamped, author stamped, the date defaults to now and ongkir to zero, the create button waits for a customer, price corrections audited, nothing outside the allowlist is logged, one `deleted` entry per sale, attachments uploaded on the create form reach their collections, attachments land on the private disk and an unsigned read is refused, a file belongs to the collection it was uploaded against, a collection holds more than one file, every screen renders with one attached, each attachment is its own link on the view screen and the two collections are separate lightbox groups, the list carries the class its table floor is keyed on, attachment / cascade delete auditing |
+| `CustomerResourceTest` | policy gating, totals summed across every sale with ongkir out of what the customer paid, a customer with no sales totals zero, a customer with sales cannot be deleted from the resource *or* the database, deactivation keeps their sales, phone and address changes audited, a long address survives the round trip, an address is searchable while its column is toggled off, bulk delete audited per row |
 | `PageViewsOnlyTest` (Unit) | which requests count as a visit |
 | `WholeRupiahTest` (Unit) | which amounts are whole rupiah, that untidy grouping is accepted, and that `1500.75` is refused rather than regrouped |
 

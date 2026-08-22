@@ -212,6 +212,7 @@ return [
         'photos_start' => 'foto meteran awal',
         'photos_end' => 'foto meteran akhir',
         'phone' => 'nomor telepon',
+        'address' => 'alamat lengkap',
         'code' => 'kode produk',
         'catalog_price' => 'harga katalog',
         'marketing_price' => 'harga marketing',
