@@ -16,8 +16,10 @@ use Illuminate\Support\HtmlString;
  * Refills a recorded reading's rate from the tariff that was in force when its
  * period closed.
  *
- * **The deliberate escape hatch from the snapshot**, and the counterpart of
- * `Sales\Actions\RefreshPricesAction`. `meter_readings.rate` is a copy taken
+ * **The deliberate escape hatch from the snapshot**, and now the only one in
+ * this project — the Oriflame sales feature had a `RefreshPricesAction` of the
+ * same shape until it stopped copying prices at all. `meter_readings.rate` is a
+ * copy taken
  * when the reading is recorded, so a tariff raise never rewrites a bill that was
  * already read off the meter — and the rate field is hidden on both form screens
  * precisely so nobody retypes it at the meter. Together those two decisions left
@@ -26,10 +28,8 @@ use Illuminate\Support\HtmlString;
  * typo, could until now only be fixed from tinker or by deleting the row and
  * entering it again. This button is that correction.
  *
- * **It takes the tariff in force at `end_read_at`, not the newest one**, and that
- * is the one place it deliberately differs from the sales action. Product prices
- * are not versioned, so "the current price" is the only figure that exists there.
- * Tariffs *are* versioned, so a July reading corrected in August has two candidate
+ * **It takes the tariff in force at `end_read_at`, not the newest one.** Tariffs
+ * are versioned, so a July reading corrected in August has two candidate
  * answers — and the newest one is the wrong one. Copying August's rate onto July's
  * reading is exactly the repricing the snapshot exists to prevent, arriving
  * through a button instead of through a join.
@@ -166,8 +166,9 @@ class RefreshRateAction
      * what the tenant is charged.
      *
      * The tariff's note is typed by a user and a modal description is rendered as
-     * HTML, so it goes through e(). Same reason RefreshPricesAction escapes a
-     * product name.
+     * HTML, so it goes through e() — an Htmlable is handed straight to toHtml()
+     * by Laravel's e(), so building one out of user text is where that escape
+     * stops being optional. See the Gotchas section of CLAUDE.md.
      */
     private static function describe(EditMeterReading $livewire): Htmlable|string
     {

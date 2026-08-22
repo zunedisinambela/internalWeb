@@ -36,7 +36,7 @@ class SaleResource extends Resource
     protected static ?string $pluralModelLabel = 'penjualan';
 
     // First in the group: this is the screen worked in every day, while
-    // customers and products are set up and then consulted.
+    // customers are set up and then consulted.
     protected static ?int $navigationSort = 10;
 
     public static function form(Schema $schema): Schema
@@ -55,13 +55,13 @@ class SaleResource extends Resource
     }
 
     /**
-     * Every total on the list is a sum over the lines, so they are loaded once
-     * per page instead of once per row. `items.product` comes with it because
-     * the row description names the products.
+     * The two relations the list renders per row, loaded once per page instead
+     * of once per row. Every figure is now a column on the sale itself, so
+     * nothing else has to come with them.
      */
     public static function getEloquentQuery(): Builder
     {
-        return parent::getEloquentQuery()->with(['customer', 'user', 'items.product']);
+        return parent::getEloquentQuery()->with(['customer', 'user']);
     }
 
     public static function getPages(): array

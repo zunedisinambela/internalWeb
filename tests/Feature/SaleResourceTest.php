@@ -3,15 +3,14 @@
 namespace Tests\Feature;
 
 use App\Filament\Resources\Sales\Pages\CreateSale;
-use App\Filament\Resources\Sales\Pages\EditSale;
 use App\Filament\Resources\Sales\Pages\ListSales;
 use App\Models\Customer;
-use App\Models\Product;
 use App\Models\Sale;
-use App\Models\SaleItem;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Storage;
 use Livewire\Livewire;
 use Spatie\Activitylog\Models\Activity;
 use Spatie\Permission\Models\Permission;
@@ -36,13 +35,13 @@ class SaleResourceTest extends TestCase
 
     public function test_a_super_admin_can_open_the_list(): void
     {
-        $customer = Customer::factory()->named('Ayu')->create();
+        $customer = Customer::factory()->named('Zunedi')->create();
         Sale::factory()->forCustomer($customer)->create();
 
         $this->actingAs($this->superAdmin())
             ->get('/sales')
             ->assertOk()
-            ->assertSee('Ayu');
+            ->assertSee('Zunedi');
     }
 
     public function test_a_read_only_role_cannot_reach_the_create_page(): void
@@ -60,295 +59,221 @@ class SaleResourceTest extends TestCase
     }
 
     /**
-     * The view screen renders the lines through a RepeatableEntry in table
-     * layout, which is the one component here with no equivalent elsewhere in
-     * the panel. Asserting the margin on the page rather than only the product
-     * name is what makes this cover the entry states rather than the heading.
+     * The worked example the flat shape was built from: Zunedi's order costs
+     * Rp 190.000 from Oriflame, Rp 10.000 to post, and is sold at the catalogue
+     * price of Rp 220.000.
+     *
+     * The margin is an accessor over the three stored columns, so it cannot
+     * disagree with them — a stored copy would be a fourth number able to
+     * contradict the three it came from.
      */
-    public function test_the_view_screen_renders_the_lines_and_the_margin(): void
+    public function test_the_margin_is_derived_from_the_three_figures(): void
     {
-        $customer = Customer::factory()->named('Ayu')->create();
-        $product = Product::factory()->priced(200_000, 150_000)->create(['name' => 'Milk Honey Gold']);
-        $sale = Sale::factory()->forCustomer($customer)->create();
+        $sale = Sale::factory()->priced(marketing: 190_000, catalog: 220_000, shipping: 10_000)->create();
 
-        SaleItem::factory()->forSale($sale)->ofProduct($product)->create();
+        $this->assertSame(200_000, $sale->total_cost);
+        $this->assertSame(20_000, $sale->profit);
+    }
+
+    /**
+     * **The decision this shape rests on.** Ongkir is the consultant's cost, not
+     * a line on the customer's bill: the customer pays the catalogue price and
+     * nothing more, so shipping comes out of the margin rather than being added
+     * on top.
+     *
+     * Two orders identical but for the postage therefore charge the customer the
+     * same and earn the consultant different amounts. Reading it the other way
+     * would make total_spent 230.000 here and the margin 30.000, and nothing
+     * after the fact could tell the two readings apart — which is why one of
+     * them is asserted.
+     */
+    public function test_shipping_is_a_cost_to_the_consultant_not_a_charge_to_the_customer(): void
+    {
+        $customer = Customer::factory()->create();
+
+        $posted = Sale::factory()->forCustomer($customer)
+            ->priced(marketing: 190_000, catalog: 220_000, shipping: 10_000)->create();
+        $handed = Sale::factory()->forCustomer($customer)
+            ->priced(marketing: 190_000, catalog: 220_000, shipping: 0)->create();
+
+        $this->assertSame(20_000, $posted->profit);
+        $this->assertSame(30_000, $handed->profit);
+
+        // What the customer paid does not move with the postage.
+        $this->assertSame(440_000, $customer->refresh()->total_spent);
+        $this->assertSame(50_000, $customer->total_profit);
+    }
+
+    /**
+     * The view screen shows the three figures and the margin they produce.
+     */
+    public function test_the_view_screen_renders_the_figures_and_the_margin(): void
+    {
+        $customer = Customer::factory()->named('Zunedi')->create();
+        $sale = Sale::factory()->forCustomer($customer)
+            ->priced(marketing: 190_000, catalog: 220_000, shipping: 10_000)->create();
 
         $this->actingAs($this->superAdmin())
-            ->get('/sales/'.$sale->getKey())
+            ->get("/sales/{$sale->getKey()}")
             ->assertOk()
-            ->assertSee('Milk Honey Gold')
-            ->assertSee('Rp 200.000')
-            ->assertSee('Rp 50.000');
+            ->assertSee('Zunedi')
+            ->assertSee('Rp 190.000')
+            ->assertSee('Rp 10.000')
+            ->assertSee('Rp 220.000')
+            ->assertSee('Rp 20.000');
     }
 
     /**
-     * The worked example the feature was built from: Ayu takes three products
-     * priced at Rp 200.000 in the catalogue, which cost this consultant
-     * Rp 150.000, leaving Rp 50.000.
+     * The grouped-rupiah round trip, on all three fields at once.
      *
-     * All three figures are accessors over the lines. None of them is stored, so
-     * none of them can disagree with the lines they were summed from.
+     * The trap this guards is RupiahInput's whole reason for existing: without
+     * ->dehydrateStateUsing() the column receives the string "1.500.000", and
+     * SQLite's loose typing stores **1** with no exception and no validation
+     * message. Asserting the stored integers is the only way that stays caught.
      */
-    public function test_the_three_totals_are_derived_from_the_lines(): void
-    {
-        $sale = Sale::factory()->create();
-
-        SaleItem::factory()->forSale($sale)->line(quantity: 1, catalog: 80_000, marketing: 60_000)->create();
-        SaleItem::factory()->forSale($sale)->line(quantity: 1, catalog: 70_000, marketing: 55_000)->create();
-        SaleItem::factory()->forSale($sale)->line(quantity: 1, catalog: 50_000, marketing: 35_000)->create();
-
-        $sale->refresh();
-
-        $this->assertSame(200_000, $sale->catalog_total);
-        $this->assertSame(150_000, $sale->marketing_total);
-        $this->assertSame(50_000, $sale->profit);
-    }
-
-    public function test_a_quantity_multiplies_both_prices(): void
-    {
-        $sale = Sale::factory()->create();
-
-        SaleItem::factory()->forSale($sale)->line(quantity: 3, catalog: 100_000, marketing: 75_000)->create();
-
-        $sale->refresh();
-
-        $this->assertSame(300_000, $sale->catalog_total);
-        $this->assertSame(225_000, $sale->marketing_total);
-        $this->assertSame(75_000, $sale->profit);
-    }
-
-    /**
-     * **The assertion the whole feature rests on.**
-     *
-     * Oriflame reprices its catalogue every month. If a sale line read its
-     * figures through the product relation, entering the new catalogue would
-     * rewrite every sale already recorded — August's margin quietly becoming
-     * September's, with no row changed and nothing in activity_log to notice.
-     *
-     * Without this test the feature passes every other one here while doing
-     * exactly the wrong thing.
-     */
-    public function test_a_later_price_change_does_not_reprice_a_recorded_sale(): void
-    {
-        $product = Product::factory()->priced(200_000, 150_000)->create();
-        $sale = Sale::factory()->create();
-
-        SaleItem::factory()->forSale($sale)->ofProduct($product)->create();
-
-        // A new catalogue arrives and everything goes up.
-        $product->update(['catalog_price' => 260_000, 'marketing_price' => 195_000]);
-
-        $sale->refresh();
-
-        $this->assertSame(200_000, $sale->catalog_total, 'The sale must keep the prices it was recorded at.');
-        $this->assertSame(150_000, $sale->marketing_total);
-        $this->assertSame(50_000, $sale->profit);
-    }
-
-    /**
-     * The same failure arriving through the form instead of through a join: a
-     * line that re-copied the product's current prices whenever the sale was
-     * saved would reprice an issued order while looking like an ordinary edit.
-     */
-    public function test_editing_a_sale_does_not_recopy_the_current_prices(): void
+    public function test_grouped_amounts_are_stored_as_integers(): void
     {
         $this->actingAs($this->superAdmin());
 
-        $product = Product::factory()->priced(200_000, 150_000)->create();
         $customer = Customer::factory()->create();
-        $sale = Sale::factory()->forCustomer($customer)->create();
-
-        SaleItem::factory()->forSale($sale)->ofProduct($product)->create();
-
-        $product->update(['catalog_price' => 260_000, 'marketing_price' => 195_000]);
-
-        // An unrelated field changes, and nothing else may move with it.
-        Livewire::test(EditSale::class, ['record' => $sale->getKey()])
-            ->fillForm(['note' => 'Diantar ke kantor'])
-            ->call('save')
-            ->assertHasNoFormErrors();
-
-        $sale->refresh();
-
-        $this->assertSame('Diantar ke kantor', $sale->note);
-        $this->assertSame(200_000, $sale->catalog_total);
-        $this->assertSame(150_000, $sale->marketing_total);
-    }
-
-    /**
-     * The escape hatch from the snapshot, and the assertion that it stays an
-     * escape hatch: the action fills the open form and writes nothing. Closing
-     * the page without saving has to leave the sale exactly as it was.
-     */
-    public function test_refreshing_prices_fills_the_form_without_saving(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $product = Product::factory()->priced(20_000, 17_000)->create(['name' => 'Produk A']);
-        $sale = Sale::factory()->create();
-
-        SaleItem::factory()->forSale($sale)->ofProduct($product, quantity: 2)->create();
-
-        $product->update(['marketing_price' => 15_000]);
-
-        $component = Livewire::test(EditSale::class, ['record' => $sale->getKey()])
-            ->callAction('refreshPrices');
-
-        $uuid = array_key_first($component->get('data.items'));
-
-        // The form now shows the current figure...
-        $component->assertSet("data.items.{$uuid}.marketing_price", '15.000');
-
-        // ...and the row still holds the one it was recorded at.
-        $this->assertSame(17_000, $sale->items()->sole()->marketing_price);
-        $this->assertSame(6_000, $sale->refresh()->profit);
-    }
-
-    /**
-     * The other half: pressing Simpan afterwards is what commits it, through the
-     * ordinary save path — so the correction lands in `sale_item` the same way a
-     * figure typed by hand would.
-     */
-    public function test_saving_after_a_refresh_commits_the_new_prices_and_audits_them(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $product = Product::factory()->priced(20_000, 17_000)->create(['name' => 'Produk A']);
-        $sale = Sale::factory()->create();
-
-        SaleItem::factory()->forSale($sale)->ofProduct($product, quantity: 2)->create();
-
-        $product->update(['marketing_price' => 15_000]);
-
-        Activity::query()->delete();
-
-        Livewire::test(EditSale::class, ['record' => $sale->getKey()])
-            ->callAction('refreshPrices')
-            ->call('save')
-            ->assertHasNoFormErrors();
-
-        $this->assertSame(15_000, $sale->items()->sole()->marketing_price);
-        $this->assertSame(10_000, $sale->refresh()->profit);
-
-        $entry = Activity::query()->where('log_name', 'sale_item')->latest('id')->first();
-
-        $this->assertNotNull($entry, 'A correction made this way has to be audited like any other.');
-        $this->assertSame(17_000, $entry->attribute_changes['old']['marketing_price']);
-        $this->assertSame(15_000, $entry->attribute_changes['attributes']['marketing_price']);
-    }
-
-    /**
-     * The button answers "are my prices current?" by being absent. A modal that
-     * opens only to say nothing would change is a worse answer than no button.
-     */
-    public function test_the_refresh_button_is_hidden_when_every_price_already_matches(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $product = Product::factory()->priced(20_000, 15_000)->create();
-        $sale = Sale::factory()->create();
-
-        SaleItem::factory()->forSale($sale)->ofProduct($product)->create();
-
-        Livewire::test(EditSale::class, ['record' => $sale->getKey()])
-            ->assertActionHidden('refreshPrices');
-
-        $product->update(['marketing_price' => 12_000]);
-
-        Livewire::test(EditSale::class, ['record' => $sale->getKey()])
-            ->assertActionVisible('refreshPrices');
-    }
-
-    /**
-     * The confirmation is the part that makes this a correction rather than a
-     * silent rewrite, so it has to name the line and both figures. A product
-     * name is typed by a user and the modal body is rendered as HTML, so it is
-     * escaped — this is the one place in the feature where that matters.
-     */
-    public function test_the_confirmation_lists_what_would_change_and_escapes_the_product_name(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $product = Product::factory()->priced(20_000, 17_000)->create(['name' => 'Milk & Honey <b>Gold</b>']);
-        $sale = Sale::factory()->create();
-
-        SaleItem::factory()->forSale($sale)->ofProduct($product)->create();
-
-        $product->update(['marketing_price' => 15_000]);
-
-        $description = (string) Livewire::test(EditSale::class, ['record' => $sale->getKey()])
-            ->instance()
-            ->getAction('refreshPrices')
-            ->getModalDescription();
-
-        $this->assertStringContainsString('Rp 17.000', $description);
-        $this->assertStringContainsString('Rp 15.000', $description);
-        $this->assertStringContainsString('Milk &amp; Honey &lt;b&gt;Gold&lt;/b&gt;', $description);
-        $this->assertStringNotContainsString('<b>Gold</b>', $description);
-    }
-
-    /**
-     * Picking a product copies both of its prices into the line. That copy is
-     * the moment the snapshot is taken, and it is what makes the assertion above
-     * possible without asking the user to type prices they already recorded.
-     *
-     * Driven with ->set() rather than fillForm(), because fillForm() fills state
-     * without firing afterStateUpdated() — and afterStateUpdated is the thing
-     * under test.
-     */
-    public function test_picking_a_product_copies_its_prices_onto_the_line(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $product = Product::factory()->priced(200_000, 150_000)->create();
-        $customer = Customer::factory()->create();
-
-        $component = Livewire::test(CreateSale::class)
-            ->fillForm([
-                'customer_id' => $customer->getKey(),
-                'items' => [['quantity' => 1]],
-            ]);
-
-        // The repeater keys its items by uuid, so the path cannot be written out
-        // in advance.
-        $uuid = array_key_first($component->get('data.items'));
-
-        $component->set("data.items.{$uuid}.product_id", $product->getKey())
-            ->assertSet("data.items.{$uuid}.catalog_price", '200.000')
-            ->assertSet("data.items.{$uuid}.marketing_price", '150.000');
-    }
-
-    /**
-     * The full round trip through the form: grouped strings in, integers in the
-     * columns, and the margin falling out of the two.
-     */
-    public function test_a_sale_recorded_through_the_form_stores_whole_rupiah(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $customer = Customer::factory()->named('Ayu')->create();
-        $product = Product::factory()->priced(200_000, 150_000)->create();
 
         Livewire::test(CreateSale::class)
             ->fillForm([
                 'customer_id' => $customer->getKey(),
                 'occurred_at' => '2026-08-14 10:00',
-                'items' => [[
-                    'product_id' => $product->getKey(),
-                    'quantity' => 1,
-                    'catalog_price' => '200.000',
-                    'marketing_price' => '150.000',
-                ]],
+                'marketing_price' => '1.500.000',
+                'shipping_cost' => '25.000',
+                'catalog_price' => '2.000.000',
             ])
             ->call('create')
             ->assertHasNoFormErrors();
 
         $sale = Sale::query()->sole();
-        $item = $sale->items()->sole();
 
-        $this->assertSame(200_000, $item->catalog_price);
-        $this->assertSame(150_000, $item->marketing_price);
-        $this->assertSame(50_000, $sale->profit);
+        $this->assertSame(1_500_000, $sale->marketing_price);
+        $this->assertSame(25_000, $sale->shipping_cost);
+        $this->assertSame(2_000_000, $sale->catalog_price);
+        $this->assertSame(475_000, $sale->profit);
+    }
+
+    /**
+     * Zero ongkir is a real answer, not an empty field — most orders are handed
+     * over rather than posted.
+     *
+     * WholeRupiah's floor is 1 by default, which is right for a price and wrong
+     * here, so the ongkir field lifts it with ->allowingZero(). Without that the
+     * commonest case is refused with "Jumlah minimal Rp 1", a message about the
+     * wrong problem.
+     */
+    public function test_a_zero_shipping_cost_is_accepted(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $customer = Customer::factory()->create();
+
+        Livewire::test(CreateSale::class)
+            ->fillForm([
+                'customer_id' => $customer->getKey(),
+                'occurred_at' => '2026-08-14 10:00',
+                'marketing_price' => '190.000',
+                'shipping_cost' => '0',
+                'catalog_price' => '220.000',
+            ])
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $this->assertSame(0, Sale::query()->sole()->shipping_cost);
+    }
+
+    /**
+     * The other half of ->allowingZero(): lifting the floor on ongkir must not
+     * lift it on the prices, where an amount of nothing is a half-filled form.
+     */
+    public function test_a_zero_price_is_still_refused(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $customer = Customer::factory()->create();
+
+        Livewire::test(CreateSale::class)
+            ->fillForm([
+                'customer_id' => $customer->getKey(),
+                'occurred_at' => '2026-08-14 10:00',
+                'marketing_price' => '0',
+                'shipping_cost' => '0',
+                'catalog_price' => '220.000',
+            ])
+            ->call('create')
+            ->assertHasFormErrors(['marketing_price']);
+
+        $this->assertSame(0, Sale::query()->count());
+    }
+
+    /**
+     * In practice the two prices entered the wrong way round.
+     *
+     * The figures are picked so the broken reading and the correct one
+     * disagree: Laravel's ->lte() decides how to compare from is_numeric(),
+     * which answers true for "150.000" (a float string meaning 150.0) and false
+     * for "1.500.000" (two dots), so it would compare one side as a number and
+     * the other as a string length. RupiahInput::notGreaterThan() compares
+     * through WholeRupiah::toInteger() instead.
+     */
+    public function test_a_marketing_price_above_the_catalogue_price_is_refused(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $customer = Customer::factory()->create();
+
+        Livewire::test(CreateSale::class)
+            ->fillForm([
+                'customer_id' => $customer->getKey(),
+                'occurred_at' => '2026-08-14 10:00',
+                'marketing_price' => '1.500.000',
+                'shipping_cost' => '0',
+                'catalog_price' => '150.000',
+            ])
+            ->call('create')
+            ->assertHasFormErrors(['marketing_price']);
+
+        $this->assertSame(0, Sale::query()->count());
+    }
+
+    /**
+     * Equal prices are accepted: selling on at cost earns nothing and is still a
+     * real sale.
+     */
+    public function test_equal_prices_are_accepted(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $customer = Customer::factory()->create();
+
+        Livewire::test(CreateSale::class)
+            ->fillForm([
+                'customer_id' => $customer->getKey(),
+                'occurred_at' => '2026-08-14 10:00',
+                'marketing_price' => '200.000',
+                'shipping_cost' => '0',
+                'catalog_price' => '200.000',
+            ])
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $this->assertSame(0, Sale::query()->sole()->profit);
+    }
+
+    /**
+     * A margin can go negative for an honest reason now — a small order posted a
+     * long way — so it is reported rather than clamped. max(0, …) would render
+     * that order as one that happened to earn nothing, which is the reading that
+     * hides it.
+     */
+    public function test_a_negative_margin_is_reported_rather_than_clamped(): void
+    {
+        $sale = Sale::factory()->priced(marketing: 100_000, catalog: 110_000, shipping: 30_000)->create();
+
+        $this->assertSame(-20_000, $sale->profit);
     }
 
     /**
@@ -358,21 +283,18 @@ class SaleResourceTest extends TestCase
     public function test_the_author_is_stamped_from_the_session(): void
     {
         $admin = $this->superAdmin();
+
         $this->actingAs($admin);
 
         $customer = Customer::factory()->create();
-        $product = Product::factory()->priced(100_000, 80_000)->create();
 
         Livewire::test(CreateSale::class)
             ->fillForm([
                 'customer_id' => $customer->getKey(),
                 'occurred_at' => '2026-08-14 10:00',
-                'items' => [[
-                    'product_id' => $product->getKey(),
-                    'quantity' => 1,
-                    'catalog_price' => '100.000',
-                    'marketing_price' => '80.000',
-                ]],
+                'marketing_price' => '190.000',
+                'shipping_cost' => '10.000',
+                'catalog_price' => '220.000',
             ])
             ->call('create')
             ->assertHasNoFormErrors();
@@ -381,181 +303,14 @@ class SaleResourceTest extends TestCase
     }
 
     /**
-     * A row written outside the form has to read as a loss rather than as a sale
-     * that happened to earn nothing — max(0, …) would render the broken line as
-     * a plausible one.
-     */
-    public function test_a_negative_margin_is_reported_rather_than_clamped(): void
-    {
-        $sale = Sale::factory()->create();
-
-        SaleItem::factory()->forSale($sale)->line(quantity: 1, catalog: 100_000, marketing: 120_000)->create();
-
-        $this->assertSame(-20_000, $sale->refresh()->profit);
-    }
-
-    /**
-     * Two lines naming the same product are almost always a double entry;
-     * quantity is what expresses "three of these".
-     */
-    public function test_the_same_product_cannot_be_listed_twice(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $customer = Customer::factory()->create();
-        $product = Product::factory()->priced(100_000, 80_000)->create();
-
-        $line = [
-            'product_id' => $product->getKey(),
-            'quantity' => 1,
-            'catalog_price' => '100.000',
-            'marketing_price' => '80.000',
-        ];
-
-        Livewire::test(CreateSale::class)
-            ->fillForm([
-                'customer_id' => $customer->getKey(),
-                'occurred_at' => '2026-08-14 10:00',
-                'items' => [$line, $line],
-            ])
-            ->call('create')
-            ->assertHasFormErrors();
-
-        $this->assertSame(0, Sale::query()->count());
-    }
-
-    /**
-     * The line-level half of the same rule the product form enforces, and it has
-     * to be repeated here because a price can be overridden per sale.
-     */
-    public function test_a_line_marketing_price_above_its_catalogue_price_is_refused(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $customer = Customer::factory()->create();
-        $product = Product::factory()->priced(200_000, 150_000)->create();
-
-        Livewire::test(CreateSale::class)
-            ->fillForm([
-                'customer_id' => $customer->getKey(),
-                'occurred_at' => '2026-08-14 10:00',
-                'items' => [[
-                    'product_id' => $product->getKey(),
-                    'quantity' => 1,
-                    'catalog_price' => '150.000',
-                    'marketing_price' => '1.500.000',
-                ]],
-            ])
-            ->call('create')
-            ->assertHasFormErrors();
-
-        $this->assertSame(0, Sale::query()->count());
-    }
-
-    /**
-     * sale_items.sale_id is the one cascade in this project: a line belongs to
-     * its sale and means nothing without it.
-     */
-    public function test_deleting_a_sale_takes_its_lines_with_it(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $sale = Sale::factory()->create();
-        SaleItem::factory()->forSale($sale)->count(3)->create();
-
-        $this->assertSame(3, SaleItem::query()->count());
-
-        $sale->delete();
-
-        $this->assertSame(0, SaleItem::query()->count());
-    }
-
-    /**
-     * The cascade fires no model events, so the sale's own entry is what records
-     * the deletion — one act, one entry, rather than one per line.
-     */
-    public function test_deleting_a_sale_writes_one_audit_entry(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $sale = Sale::factory()->create();
-        SaleItem::factory()->forSale($sale)->count(3)->create();
-
-        Activity::query()->delete();
-
-        $sale->delete();
-
-        $this->assertSame(1, Activity::query()->where('log_name', 'sale')->where('event', 'deleted')->count());
-        $this->assertSame(0, Activity::query()->where('log_name', 'sale_item')->where('event', 'deleted')->count());
-    }
-
-    /**
-     * Both snapshot columns are on the SaleItem allowlist, for the same reason
-     * meter_readings.rate is: they hold values copied from somewhere else, so a
-     * line whose figures match no product is only explicable from the log.
-     */
-    public function test_a_line_price_correction_is_audited(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $item = SaleItem::factory()->line(quantity: 1, catalog: 200_000, marketing: 150_000)
-            ->create(['sale_id' => Sale::factory()]);
-
-        $item->update(['marketing_price' => 140_000]);
-
-        $entry = Activity::query()->where('log_name', 'sale_item')->latest('id')->first();
-
-        $this->assertNotNull($entry);
-        $this->assertSame(150_000, $entry->attribute_changes['old']['marketing_price']);
-        $this->assertSame(140_000, $entry->attribute_changes['attributes']['marketing_price']);
-    }
-
-    /**
-     * The allowlist is what keeps the log safe as columns are added, so the
-     * assertion has to be that nothing *outside* it arrives — not merely that
-     * the listed columns do. `user_id` is the one to watch here: it is written
-     * on every create and would otherwise ride along.
+     * The customer select is required and has no free-text fallback, so the form
+     * would otherwise open onto an empty list and refuse to save with a message
+     * naming a field rather than the missing customer.
      *
-     * The shape `UserActivityLoggingTest` and `TransactionResourceTest`
-     * established, applied to both models this feature adds.
+     * One prerequisite now rather than two — there is no product catalogue to
+     * wait for.
      */
-    public function test_nothing_outside_the_allowlist_is_logged(): void
-    {
-        $this->actingAs($this->superAdmin());
-
-        $sale = Sale::factory()->create(['note' => 'Awal']);
-        $sale->update(['note' => 'Diubah']);
-
-        $saleEntry = Activity::query()->where('log_name', 'sale')->latest('id')->first();
-
-        $this->assertNotNull($saleEntry);
-        $this->assertSame(
-            ['note'],
-            array_keys($saleEntry->attribute_changes['attributes']),
-            'Only the allowlisted columns may reach the sale log.',
-        );
-
-        $item = SaleItem::factory()->forSale($sale)
-            ->line(quantity: 1, catalog: 200_000, marketing: 150_000)
-            ->create();
-        $item->update(['quantity' => 2]);
-
-        $itemEntry = Activity::query()->where('log_name', 'sale_item')->latest('id')->first();
-
-        $this->assertNotNull($itemEntry);
-        $this->assertSame(
-            ['quantity'],
-            array_keys($itemEntry->attribute_changes['attributes']),
-            'Only the allowlisted columns may reach the sale line log.',
-        );
-    }
-
-    /**
-     * Both selects are required and neither has a free-text fallback, so the
-     * form would otherwise open onto empty lists and refuse to save with a
-     * message naming a field rather than the missing catalogue.
-     */
-    public function test_the_create_button_waits_for_a_customer_and_a_product(): void
+    public function test_the_create_button_waits_for_a_customer(): void
     {
         $this->actingAs($this->superAdmin());
 
@@ -563,11 +318,6 @@ class SaleResourceTest extends TestCase
             ->assertActionHidden(TestAction::make('create'));
 
         Customer::factory()->create();
-
-        Livewire::test(ListSales::class)
-            ->assertActionHidden(TestAction::make('create'));
-
-        Product::factory()->create();
 
         Livewire::test(ListSales::class)
             ->assertActionVisible(TestAction::make('create'));
@@ -589,5 +339,295 @@ class SaleResourceTest extends TestCase
         } finally {
             Carbon::setTestNow();
         }
+    }
+
+    /**
+     * Ongkir starts at zero so the commonest order needs no typing, and the
+     * field renders it grouped rather than blank — a blank required field reads
+     * as the form being broken.
+     */
+    public function test_the_shipping_cost_defaults_to_zero(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        Livewire::test(CreateSale::class)
+            ->assertFormSet(['shipping_cost' => '0']);
+    }
+
+    /**
+     * All three figures are on the allowlist, and that is the point of it here:
+     * they are the whole record of the order, so a margin that reads differently
+     * today than it did last month is only explicable from the log.
+     */
+    public function test_a_price_correction_is_audited(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $sale = Sale::factory()->priced(marketing: 190_000, catalog: 220_000, shipping: 10_000)->create();
+
+        $sale->update(['marketing_price' => 180_000]);
+
+        $entry = Activity::query()->where('log_name', 'sale')->latest('id')->first();
+
+        $this->assertNotNull($entry);
+        $this->assertSame(190_000, $entry->attribute_changes['old']['marketing_price']);
+        $this->assertSame(180_000, $entry->attribute_changes['attributes']['marketing_price']);
+    }
+
+    /**
+     * The allowlist is what keeps the log safe as columns are added, so the
+     * assertion has to be that nothing *outside* it arrives — not merely that
+     * the listed columns do. `user_id` is the one to watch: it is written on
+     * every create and would otherwise ride along.
+     *
+     * The shape UserActivityLoggingTest and TransactionResourceTest established.
+     */
+    public function test_nothing_outside_the_allowlist_is_logged(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $sale = Sale::factory()->create(['note' => 'Awal']);
+        $sale->update(['note' => 'Diubah']);
+
+        $entry = Activity::query()->where('log_name', 'sale')->latest('id')->first();
+
+        $this->assertNotNull($entry);
+        $this->assertSame(
+            ['note'],
+            array_keys($entry->attribute_changes['attributes']),
+            'Only the allowlisted columns may reach the sale log.',
+        );
+    }
+
+    /**
+     * One sale is one act, and it now leaves exactly one entry — there are no
+     * lines under it to account for separately.
+     */
+    public function test_deleting_a_sale_writes_one_audit_entry(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $sale = Sale::factory()->create();
+
+        Activity::query()->delete();
+
+        $sale->delete();
+
+        $this->assertSame(1, Activity::query()->where('log_name', 'sale')->where('event', 'deleted')->count());
+    }
+
+    /**
+     * The create path, which is the one that can break without anything else
+     * noticing: on create the record does not exist when the file is uploaded,
+     * so Filament holds it and attaches it after the insert. Every other test
+     * here calls addMedia() on a saved row and would stay green if that
+     * handover broke.
+     */
+    public function test_attachments_uploaded_on_the_create_form_reach_their_collections(): void
+    {
+        Storage::fake('local');
+
+        $this->actingAs($this->superAdmin());
+
+        $customer = Customer::factory()->create();
+
+        Livewire::test(CreateSale::class)
+            ->fillForm([
+                'customer_id' => $customer->getKey(),
+                'occurred_at' => '2026-08-14 10:00',
+                'marketing_price' => '190.000',
+                'shipping_cost' => '10.000',
+                'catalog_price' => '220.000',
+                'payment_proofs' => [UploadedFile::fake()->image('transfer.jpg')],
+                'shipping_proofs' => [UploadedFile::fake()->image('resi.jpg')],
+            ])
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $sale = Sale::query()->sole();
+
+        $this->assertCount(1, $sale->getMedia(Sale::PAYMENT_PROOFS));
+        $this->assertCount(1, $sale->getMedia(Sale::SHIPPING_PROOFS));
+        $this->assertSame('local', $sale->getFirstMedia(Sale::PAYMENT_PROOFS)->disk);
+    }
+
+    /**
+     * The disk decision, asserted rather than left to a comment. A transfer
+     * receipt carries a bank account number and a name, a resi carries the
+     * customer's home address; the `public` disk would make either readable by
+     * URL with no role check and no policy.
+     */
+    public function test_attachments_land_on_the_private_disk(): void
+    {
+        Storage::fake('local');
+
+        $sale = Sale::factory()->create();
+        $sale->addMedia(UploadedFile::fake()->image('transfer.jpg'))
+            ->toMediaCollection(Sale::PAYMENT_PROOFS);
+
+        $media = $sale->refresh()->getFirstMedia(Sale::PAYMENT_PROOFS);
+
+        $this->assertSame('local', $media->disk);
+        $this->assertSame(Sale::PAYMENT_PROOFS, $media->collection_name);
+    }
+
+    /**
+     * Which file is evidence of what is the whole point of attaching them, and
+     * it is held by collection_name rather than by upload order — order is
+     * destroyed by reordering or by deleting one file, and neither leaves a
+     * trace that the pairing has shifted.
+     */
+    public function test_an_attachment_belongs_to_the_field_it_was_uploaded_against(): void
+    {
+        Storage::fake('local');
+
+        $sale = Sale::factory()->create();
+        $sale->addMedia(UploadedFile::fake()->image('transfer.jpg'))
+            ->toMediaCollection(Sale::PAYMENT_PROOFS);
+        $sale->addMedia(UploadedFile::fake()->image('resi.jpg'))
+            ->toMediaCollection(Sale::SHIPPING_PROOFS);
+
+        $sale->refresh();
+
+        $this->assertSame('transfer.jpg', $sale->getFirstMedia(Sale::PAYMENT_PROOFS)->file_name);
+        $this->assertSame('resi.jpg', $sale->getFirstMedia(Sale::SHIPPING_PROOFS)->file_name);
+        $this->assertCount(1, $sale->getMedia(Sale::PAYMENT_PROOFS));
+        $this->assertCount(1, $sale->getMedia(Sale::SHIPPING_PROOFS));
+
+        // Both registered, so neither falls through to media-library's own
+        // default disk — which is `public`, and would publish the file by URL
+        // with no role check at all.
+        $this->assertSame('local', $sale->getFirstMedia(Sale::SHIPPING_PROOFS)->disk);
+    }
+
+    /**
+     * Several files per collection is the point of ->multiple() here: a split
+     * payment is two transfers, and an order sent in two parcels is two resi.
+     */
+    public function test_a_collection_holds_more_than_one_file(): void
+    {
+        Storage::fake('local');
+
+        $sale = Sale::factory()->create();
+        $sale->addMedia(UploadedFile::fake()->image('transfer-1.jpg'))
+            ->toMediaCollection(Sale::PAYMENT_PROOFS);
+        $sale->addMedia(UploadedFile::fake()->image('transfer-2.jpg'))
+            ->toMediaCollection(Sale::PAYMENT_PROOFS);
+
+        $this->assertCount(2, $sale->refresh()->getMedia(Sale::PAYMENT_PROOFS));
+    }
+
+    /**
+     * The `local` disk sets serve => true and no visibility key, so Laravel
+     * treats it as private and its /storage route refuses any request without a
+     * valid signature — before it looks for the file, which is why this works
+     * against a faked disk.
+     */
+    public function test_an_attachment_cannot_be_fetched_without_a_signature(): void
+    {
+        Storage::fake('local');
+
+        $sale = Sale::factory()->create();
+        $sale->addMedia(UploadedFile::fake()->image('transfer.jpg'))
+            ->toMediaCollection(Sale::PAYMENT_PROOFS);
+
+        $path = $sale->refresh()
+            ->getFirstMedia(Sale::PAYMENT_PROOFS)
+            ->getPathRelativeToRoot();
+
+        $this->get('/storage/'.$path)->assertForbidden();
+    }
+
+    /**
+     * Renders the screens that actually resolve an attachment URL.
+     *
+     * The image column and the image entry take a separate code path when the
+     * component is marked private — they ask medialibrary for a temporary URL
+     * instead of a plain one. Nothing else here would notice a broken one: it
+     * still renders, it just renders as a broken image. Both collections are
+     * filled so a missing flag on either component is caught here rather than by
+     * eye.
+     */
+    public function test_every_screen_renders_with_an_attachment(): void
+    {
+        Storage::fake('local');
+
+        $customer = Customer::factory()->named('Zunedi')->create();
+        $sale = Sale::factory()->forCustomer($customer)->create();
+        $sale->addMedia(UploadedFile::fake()->image('transfer.jpg'))
+            ->toMediaCollection(Sale::PAYMENT_PROOFS);
+        $sale->addMedia(UploadedFile::fake()->image('resi.jpg'))
+            ->toMediaCollection(Sale::SHIPPING_PROOFS);
+
+        $admin = $this->superAdmin();
+
+        $this->actingAs($admin)->get('/sales')->assertOk()->assertSee('Zunedi');
+        $this->actingAs($admin)->get('/sales/create')->assertOk();
+        $this->actingAs($admin)->get('/sales/'.$sale->getKey())->assertOk();
+        $this->actingAs($admin)->get('/sales/'.$sale->getKey().'/edit')->assertOk();
+    }
+
+    /**
+     * Attachments are a relation, so LogsActivity cannot see them. Removing the
+     * proof that an order was paid for is exactly what an audit trail is for —
+     * the same split LogRoleChange makes for roles.
+     *
+     * Both collections write the same event key; which one lost the file is in
+     * the `collection` property, so filtering for "a sale attachment was
+     * removed" does not mean remembering two keys.
+     */
+    public function test_deleting_an_attachment_is_audited(): void
+    {
+        Storage::fake('local');
+
+        $sale = Sale::factory()->create();
+        $sale->addMedia(UploadedFile::fake()->image('resi.jpg'))
+            ->toMediaCollection(Sale::SHIPPING_PROOFS);
+
+        $sale->refresh()->getFirstMedia(Sale::SHIPPING_PROOFS)->delete();
+
+        $entry = Activity::query()->where('event', 'sale_attachment_deleted')->sole();
+
+        $this->assertSame('sale', $entry->log_name);
+        $this->assertSame('Lampiran penjualan dihapus', $entry->description);
+        $this->assertSame('resi.jpg', $entry->properties->get('file_name'));
+        $this->assertSame(Sale::SHIPPING_PROOFS, $entry->properties->get('collection'));
+        $this->assertSame($sale->getKey(), $entry->properties->get('sale_id'));
+    }
+
+    /**
+     * Deleting a sale writes its own entry *and* one per attachment. The
+     * duplication is wanted: a file removed on its own and a file that went down
+     * with its row are different events, and the log should not have to infer
+     * which happened.
+     *
+     * It depends on two unrelated mechanisms lining up — medialibrary removing
+     * its files from the `deleting` event, and the Media::deleted listener
+     * firing once per row — so the counts are asserted rather than left to be
+     * noticed later.
+     */
+    public function test_deleting_a_sale_audits_the_row_and_each_attachment(): void
+    {
+        Storage::fake('local');
+
+        $this->actingAs($this->superAdmin());
+
+        $sale = Sale::factory()->create();
+        $sale->addMedia(UploadedFile::fake()->image('transfer.jpg'))->toMediaCollection(Sale::PAYMENT_PROOFS);
+        $sale->addMedia(UploadedFile::fake()->image('resi.jpg'))->toMediaCollection(Sale::SHIPPING_PROOFS);
+
+        Activity::query()->delete();
+
+        $sale->delete();
+
+        $this->assertSame(1, Activity::query()
+            ->where('log_name', 'sale')
+            ->where('event', 'deleted')
+            ->count());
+
+        $this->assertSame(2, Activity::query()
+            ->where('log_name', 'sale')
+            ->where('event', 'sale_attachment_deleted')
+            ->count());
     }
 }

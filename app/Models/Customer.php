@@ -53,15 +53,15 @@ class Customer extends Model
     /**
      * Everything ever earned from this customer.
      *
-     * Walks the sales and their lines rather than reading a stored figure, for
-     * the reason every total in this feature is derived: a stored one would be a
-     * number able to disagree with the lines it came from, and nothing would say
-     * which of the two was right.
+     * Walks the sales rather than reading a stored figure, for the reason every
+     * total in this feature is derived: a stored one would be a number able to
+     * disagree with the rows it came from, and nothing would say which of the
+     * two was right.
      *
      * The cost is that it is only cheap on a loaded relation, so the caller
-     * loads it — `loadMissing('sales.items')` on the view screen. A `withSum` on
-     * the list query would be faster and would be a second copy of the
-     * arithmetic; the list therefore shows a count, not a margin.
+     * loads it — `loadMissing('sales')` on the view screen. A `withSum` on the
+     * list query would be faster and would be a second copy of the arithmetic;
+     * the list therefore shows a count, not a margin.
      */
     protected function totalProfit(): Attribute
     {
@@ -71,12 +71,15 @@ class Customer extends Model
     }
 
     /**
-     * What this customer has paid across every sale, at catalogue prices.
+     * What this customer has paid across every order, at catalogue prices.
+     *
+     * Ongkir is not in it: the customer pays the catalogue price and the
+     * shipping comes out of the consultant's margin. See Sale::$profit.
      */
     protected function totalSpent(): Attribute
     {
         return Attribute::get(fn (): int => $this->sales->sum(
-            fn (Sale $sale): int => $sale->catalog_total,
+            fn (Sale $sale): int => $sale->catalog_price,
         ));
     }
 

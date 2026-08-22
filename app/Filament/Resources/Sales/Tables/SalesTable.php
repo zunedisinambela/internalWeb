@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\Sales\Tables;
 
 use App\Models\Customer;
-use App\Models\Product;
 use App\Models\Sale;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
@@ -11,6 +10,7 @@ use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\DatePicker;
+use Filament\Tables\Columns\SpatieMediaLibraryImageColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
@@ -38,50 +38,49 @@ class SalesTable
                     ->label('Pelanggan')
                     ->searchable()
                     ->sortable()
-                    ->weight('medium')
-                    // The products as the description rather than a second
-                    // column: a sale is identified by who bought and what, and
-                    // the list is scanned for exactly that pair.
-                    ->description(fn (Sale $record): ?string => $record->items
-                        ->map(fn ($item): string => $item->product?->name.' ×'.$item->quantity)
-                        ->filter()
-                        ->join(', ') ?: null),
+                    ->weight('medium'),
 
-                TextColumn::make('items_count')
-                    ->label('Item')
-                    ->counts('items')
+                // The three stored figures, in the order they are read off a
+                // note. Unlike the previous shape these are real columns, so
+                // ->sortable() needs no expression — there is nothing derived
+                // left for Filament to silently reorder by nothing.
+                TextColumn::make('marketing_price')
+                    ->label('Harga market')
                     ->alignEnd()
-                    ->badge()
-                    ->toggleable(isToggledHiddenByDefault: true),
+                    ->state(fn (Sale $record): string => self::rupiah($record->marketing_price))
+                    ->sortable(),
 
-                // All three totals are accessors over the loaded lines, so the
-                // database has no column to sort them by. The expression is
-                // spelled out per column through Sale::sumOfItems(), because
-                // ->sortable() alone on a ->state() column renders a control
-                // that silently reorders by nothing.
-                TextColumn::make('catalog_total')
+                TextColumn::make('shipping_cost')
+                    ->label('Ongkir')
+                    ->alignEnd()
+                    ->state(fn (Sale $record): string => self::rupiah($record->shipping_cost))
+                    ->sortable(),
+
+                TextColumn::make('catalog_price')
                     ->label('Harga katalog')
                     ->alignEnd()
-                    ->state(fn (Sale $record): string => 'Rp '.number_format($record->catalog_total, 0, ',', '.'))
-                    ->sortable(query: fn (Builder $query, string $direction): Builder => $query
-                        ->orderBy(Sale::sumOfItems('quantity * catalog_price'), $direction)),
+                    ->state(fn (Sale $record): string => self::rupiah($record->catalog_price))
+                    ->sortable(),
 
-                TextColumn::make('marketing_total')
-                    ->label('Harga marketing')
-                    ->alignEnd()
-                    ->state(fn (Sale $record): string => 'Rp '.number_format($record->marketing_total, 0, ',', '.'))
-                    ->sortable(query: fn (Builder $query, string $direction): Builder => $query
-                        ->orderBy(Sale::sumOfItems('quantity * marketing_price'), $direction))
-                    ->toggleable(),
-
+                // The margin is the one figure here with no column behind it, so
+                // its sort is spelled out. The expression lives on the model
+                // beside the accessor it has to agree with.
                 TextColumn::make('profit')
                     ->label('Keuntungan')
                     ->alignEnd()
-                    ->state(fn (Sale $record): string => 'Rp '.number_format($record->profit, 0, ',', '.'))
+                    ->state(fn (Sale $record): string => self::rupiah($record->profit))
                     ->color(fn (Sale $record): string => $record->profit < 0 ? 'danger' : 'success')
                     ->weight('bold')
                     ->sortable(query: fn (Builder $query, string $direction): Builder => $query
-                        ->orderBy(Sale::sumOfItems('quantity * (catalog_price - marketing_price)'), $direction)),
+                        ->orderByRaw(Sale::PROFIT_EXPRESSION.' '.($direction === 'desc' ? 'desc' : 'asc'))),
+
+                // Both hidden by default. The list is scanned for figures, and
+                // two more columns on a table that already scrolls sideways on a
+                // phone would cost more than they are read — but "did this one
+                // get paid" is a real question, so they are one toggle away
+                // rather than absent.
+                self::attachments('payment_proofs', Sale::PAYMENT_PROOFS, 'Bukti transfer'),
+                self::attachments('shipping_proofs', Sale::SHIPPING_PROOFS, 'Resi'),
 
                 TextColumn::make('note')
                     ->label('Catatan')
@@ -98,12 +97,6 @@ class SalesTable
                 SelectFilter::make('customer_id')
                     ->label('Pelanggan')
                     ->relationship('customer', 'name', fn (Builder $query): Builder => $query->orderBy('name'))
-                    ->searchable()
-                    ->preload(),
-
-                SelectFilter::make('product')
-                    ->label('Produk')
-                    ->relationship('items.product', 'name', fn (Builder $query): Builder => $query->orderBy('name'))
                     ->searchable()
                     ->preload(),
 
@@ -139,20 +132,51 @@ class SalesTable
             ->toolbarActions([
                 BulkActionGroup::make([
                     // Pinned to per-record deletes so each sale writes its own
-                    // activity log entry. The lines go with it through the
-                    // foreign key cascade either way, but the single-query bulk
-                    // path would take the audit trail down with the rows.
+                    // activity log entry; the single-query bulk path fires no
+                    // model events and would take the audit trail down with the
+                    // rows.
                     DeleteBulkAction::make()->fetchSelectedRecords(),
                 ]),
             ])
             ->emptyStateHeading('Belum ada penjualan')
-            // Names whichever prerequisite is actually missing. The create button
-            // hides until both exist, so an empty state saying only "catat
-            // penjualan pertama Anda" would describe a button that is not there.
-            ->emptyStateDescription(fn (): string => match (true) {
-                ! Customer::query()->exists() => 'Tambahkan pelanggan terlebih dahulu di menu Pelanggan.',
-                ! Product::query()->exists() => 'Tambahkan produk terlebih dahulu di menu Produk.',
-                default => 'Catat pembelian pertama pelanggan Anda.',
-            });
+            // The create button hides until a customer exists, so the empty
+            // state names that prerequisite rather than describing a button that
+            // is not there.
+            ->emptyStateDescription(fn (): string => Customer::query()->exists()
+                ? 'Catat pembelian pertama pelanggan Anda.'
+                : 'Tambahkan pelanggan terlebih dahulu di menu Pelanggan.');
+    }
+
+    /**
+     * One image column bound to one collection, built from a shared factory for
+     * the reason given in SaleForm: a missing ->visibility('private') renders a
+     * broken image and logs nothing.
+     */
+    private static function attachments(string $name, string $collection, string $label): SpatieMediaLibraryImageColumn
+    {
+        return SpatieMediaLibraryImageColumn::make($name)
+            ->label($label)
+            ->collection($collection)
+            ->conversion(Sale::THUMBNAIL)
+            ->disk('local')
+            // Same reason as on the form field: the private disk answers signed
+            // URLs only, and without this the column asks for an unsigned one and
+            // renders a broken image.
+            ->visibility('private')
+            ->circular()
+            ->stacked()
+            ->limit(3)
+            ->limitedRemainingText()
+            ->toggleable(isToggledHiddenByDefault: true);
+    }
+
+    /**
+     * Grouped the Indonesian way, whole rupiah. Written out rather than with
+     * ->money('IDR') for the reason given under Keuangan: money() renders two
+     * decimal places unless told otherwise, and every figure here is whole.
+     */
+    private static function rupiah(int $amount): string
+    {
+        return 'Rp '.number_format($amount, 0, ',', '.');
     }
 }

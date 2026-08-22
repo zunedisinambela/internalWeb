@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Listeners\LogRoleChange;
 use App\Models\MeterReading;
+use App\Models\Sale;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Policies\ActivityPolicy;
@@ -55,6 +56,12 @@ class AppServiceProvider extends ServiceProvider
      * return meter photographs, and the two are read by different people for
      * different reasons.
      *
+     * The map is keyed by **owner, not by collection**, and that is the right
+     * granularity. MeterReading has two collections and Sale has two; which one
+     * lost a file is already in the entry's `collection` property, which the
+     * listener writes for every owner. A key per collection would mean two event
+     * keys to remember for one question.
+     *
      * @var array<class-string, array{log: string, event: string, description: string, owner_key: string}>
      */
     protected const AUDITED_MEDIA_OWNERS = [
@@ -69,6 +76,12 @@ class AppServiceProvider extends ServiceProvider
             'event' => 'meter_photo_deleted',
             'description' => 'Foto meteran dihapus',
             'owner_key' => 'meter_reading_id',
+        ],
+        Sale::class => [
+            'log' => 'sale',
+            'event' => 'sale_attachment_deleted',
+            'description' => 'Lampiran penjualan dihapus',
+            'owner_key' => 'sale_id',
         ],
     ];
 

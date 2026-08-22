@@ -4,17 +4,15 @@ namespace App\Filament\Resources\Sales\Schemas;
 
 use App\Filament\Forms\Components\RupiahInput;
 use App\Models\Customer;
-use App\Models\Product;
+use App\Models\Sale;
 use App\Rules\WholeRupiah;
 use Filament\Forms\Components\DateTimePicker;
-use Filament\Forms\Components\Repeater;
-use Filament\Forms\Components\Repeater\TableColumn;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\SpatieMediaLibraryFileUpload;
 use Filament\Forms\Components\TextInput;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
-use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 
@@ -77,197 +75,170 @@ class SaleForm
                             ->helperText('Misalnya "diantar ke kantor" atau "bayar minggu depan".'),
                     ]),
 
-                Section::make('Produk yang dibeli')
-                    ->description('Harga terisi otomatis dari katalog saat produk dipilih, lalu tersimpan sebagai salinan pada baris ini. Perubahan harga katalog nanti tidak mengubah penjualan yang sudah tercatat.')
-                    ->icon(Heroicon::OutlinedShoppingCart)
+                Section::make('Harga')
+                    ->description('Tiga angka yang menentukan keuntungan pesanan ini. Semuanya rupiah penuh, tanpa sen.')
+                    ->icon(Heroicon::OutlinedBanknotes)
+                    ->columns(3)
                     ->components([
-                        Repeater::make('items')
-                            ->hiddenLabel()
-                            // Bound to the HasMany, so Filament writes the lines
-                            // after the sale itself and reloads them on edit.
-                            ->relationship()
-                            // Table layout rather than stacked cards: a sale is
-                            // read by scanning a column of figures, and six
-                            // fields per card would put each line's prices on a
-                            // different horizontal position from the last.
-                            ->table([
-                                TableColumn::make('Produk'),
-                                TableColumn::make('Jumlah')->width('7rem')->alignEnd(),
-                                TableColumn::make('Harga katalog')->width('12rem'),
-                                TableColumn::make('Harga marketing')->width('12rem'),
-                                TableColumn::make('Untung')->width('10rem')->alignEnd(),
-                            ])
-                            ->components([
-                                Select::make('product_id')
-                                    ->label('Produk')
-                                    ->relationship('product', 'name', fn ($query) => $query->orderBy('name'))
-                                    // Inactive products stay in the list for the
-                                    // same reason inactive customers do — an old
-                                    // sale has to stay openable — but they say so.
-                                    ->getOptionLabelFromRecordUsing(fn (Product $record): string => $record->is_active
-                                        ? $record->name
-                                        : $record->name.' (tidak aktif)')
-                                    ->searchable()
-                                    ->preload()
-                                    ->required()
-                                    ->distinct()
-                                    // Two lines naming the same product are
-                                    // almost always a double entry rather than an
-                                    // intent; quantity is what expresses "three
-                                    // of these".
-                                    ->validationMessages([
-                                        'distinct' => 'Produk ini sudah ada di daftar. Ubah jumlahnya saja.',
-                                    ])
-                                    ->live()
-                                    ->afterStateUpdated(static function (Set $set, mixed $state): void {
-                                        $product = blank($state) ? null : Product::find($state);
+                        // Laid out in the order they are read off a note: what
+                        // was paid, what the postage cost, what was charged.
+                        RupiahInput::make('marketing_price')
+                            ->label('Harga market')
+                            ->required()
+                            ->helperText('Yang Anda bayar ke Oriflame.')
+                            // Not Laravel's ->lte(): these fields hold grouped
+                            // strings during validation, and lte picks its
+                            // comparison from is_numeric(), which reads
+                            // "150.000" as a number and "1.500.000" as a string
+                            // length. See RupiahInput::notGreaterThan().
+                            ->notGreaterThan(
+                                'catalog_price',
+                                'Harga market tidak boleh lebih besar dari harga katalog.',
+                            ),
 
-                                        if ($product === null) {
-                                            return;
-                                        }
+                        RupiahInput::make('shipping_cost')
+                            ->label('Ongkir')
+                            ->required()
+                            ->default(0)
+                            // Zero is a real answer here rather than an empty
+                            // field — most orders are handed over rather than
+                            // posted — so the default WholeRupiah floor of 1 is
+                            // lifted. See RupiahInput::allowingZero().
+                            ->allowingZero()
+                            ->helperText('Ongkos kirim yang Anda tanggung. Isi 0 bila diantar sendiri.'),
 
-                                        // The copy. This is the moment the
-                                        // snapshot is taken, and it is the whole
-                                        // feature: from here the line carries its
-                                        // own figures and never consults the
-                                        // product again.
-                                        //
-                                        // Formatted, not raw — the fields hold a
-                                        // grouped string while the form is open
-                                        // and dehydrate back to integers on save.
-                                        $set('catalog_price', WholeRupiah::format($product->catalog_price));
-                                        $set('marketing_price', WholeRupiah::format($product->marketing_price));
-                                    }),
-
-                                TextInput::make('quantity')
-                                    ->label('Jumlah')
-                                    ->numeric()
-                                    ->integer()
-                                    ->minValue(1)
-                                    ->default(1)
-                                    ->required()
-                                    ->live(onBlur: true),
-
-                                RupiahInput::make('catalog_price')
-                                    ->label('Harga katalog')
-                                    ->required(),
-
-                                RupiahInput::make('marketing_price')
-                                    ->label('Harga marketing')
-                                    ->required()
-                                    // Same reasoning as on the product form, and
-                                    // the same reason it is not Laravel's ->lte():
-                                    // these fields hold grouped strings during
-                                    // validation. See RupiahInput::notGreaterThan().
-                                    ->notGreaterThan(
-                                        'catalog_price',
-                                        'Harga marketing tidak boleh lebih besar dari harga katalog.',
-                                    ),
-
-                                // Per line, so a product entered at the wrong
-                                // price shows up here rather than only in the
-                                // total, where one wrong line among six is
-                                // invisible.
-                                TextEntry::make('line_profit')
-                                    ->hiddenLabel()
-                                    ->state(static fn (Get $get): string => 'Rp '.number_format(
-                                        self::lineProfit($get), 0, ',', '.',
-                                    ))
-                                    ->weight('bold')
-                                    ->color(static fn (Get $get): string => self::lineProfit($get) < 0
-                                        ? 'danger'
-                                        : 'success'),
-                            ])
-                            ->addActionLabel('Tambah produk')
-                            ->reorderable(false)
-                            ->defaultItems(1)
-                            ->minItems(1),
+                        RupiahInput::make('catalog_price')
+                            ->label('Harga katalog')
+                            ->required()
+                            ->helperText('Yang dibayar pelanggan.'),
                     ]),
 
                 Section::make('Ringkasan')
-                    ->columns(3)
+                    ->columns(2)
                     ->components([
                         // Computed for the screen only; nothing here is stored.
-                        // The stored figures are on the lines, and every total is
-                        // a sum over them — a stored total would be a fourth
-                        // number able to disagree with the three it came from.
-                        TextEntry::make('catalog_total_preview')
-                            ->label('Total harga katalog')
-                            ->state(static fn (Get $get): string => 'Rp '.number_format(
-                                self::totals($get)['catalog'], 0, ',', '.',
-                            ))
-                            ->helperText('Yang dibayar pelanggan.'),
-
-                        TextEntry::make('marketing_total_preview')
-                            ->label('Total harga marketing')
-                            ->state(static fn (Get $get): string => 'Rp '.number_format(
-                                self::totals($get)['marketing'], 0, ',', '.',
-                            ))
-                            ->helperText('Yang Anda bayar ke Oriflame.'),
+                        // The margin is an accessor over the three columns above,
+                        // so a stored copy would be a fourth number able to
+                        // disagree with them.
+                        TextEntry::make('total_cost_preview')
+                            ->label('Total modal')
+                            ->state(static fn (Get $get): string => self::rupiah(self::figures($get)['cost']))
+                            ->helperText('Harga market ditambah ongkir.'),
 
                         TextEntry::make('profit_preview')
                             ->label('Keuntungan')
-                            ->state(static fn (Get $get): string => 'Rp '.number_format(
-                                self::totals($get)['profit'], 0, ',', '.',
-                            ))
+                            ->state(static fn (Get $get): string => self::rupiah(self::figures($get)['profit']))
                             ->weight('bold')
                             ->size('lg')
-                            ->color(static fn (Get $get): string => self::totals($get)['profit'] < 0
+                            ->color(static fn (Get $get): string => self::figures($get)['profit'] < 0
                                 ? 'danger'
                                 : 'success'),
+                    ]),
+
+                Section::make('Lampiran')
+                    ->description('Bukti transfer dan resi disimpan terpisah, supaya sebuah berkas menyatakan sendiri ia bukti apa. Semuanya opsional.')
+                    ->icon(Heroicon::OutlinedPaperClip)
+                    ->columns(2)
+                    ->components([
+                        // Side by side rather than stacked, so the two drop zones
+                        // are visibly different targets. Uploading a resi against
+                        // the payment field then takes a deliberate mistake
+                        // rather than a careless one — the same layout reasoning
+                        // MeterReadingForm uses for its two ends.
+                        self::attachments(
+                            'payment_proofs',
+                            Sale::PAYMENT_PROOFS,
+                            'Bukti transfer',
+                            'Tangkapan layar transfer dari pelanggan. Beberapa berkas bila dibayar dicicil.',
+                        ),
+
+                        self::attachments(
+                            'shipping_proofs',
+                            Sale::SHIPPING_PROOFS,
+                            'Resi pengiriman',
+                            'Resi dari kurir. Beberapa berkas bila dikirim dalam beberapa paket.',
+                        ),
                     ]),
             ])
             ->columns(1);
     }
 
     /**
-     * The margin on one repeater line as it currently stands.
+     * One upload field bound to one collection.
      *
-     * `$get` inside a repeater item is scoped to that item, so the bare field
-     * names reach this line's own state rather than the first one's.
+     * Written once and called twice rather than typed out per collection, for
+     * the reason MeterReadingForm gives: the flag that matters most on these is
+     * ->visibility('private'), and its absence produces a broken image with
+     * nothing in the log. A second copy is a second chance to lose it silently.
      */
-    private static function lineProfit(Get $get): int
+    private static function attachments(string $name, string $collection, string $label, string $helperText): SpatieMediaLibraryFileUpload
     {
-        $quantity = (int) $get('quantity');
-
-        return $quantity * (
-            (int) WholeRupiah::toInteger($get('catalog_price'))
-            - (int) WholeRupiah::toInteger($get('marketing_price'))
-        );
+        return SpatieMediaLibraryFileUpload::make($name)
+            ->label($label)
+            ->collection($collection)
+            ->disk('local')
+            // Makes Filament ask for a signed, expiring URL. The private disk
+            // refuses an unsigned one before it even looks for the file, so
+            // without this every preview silently becomes a broken image with
+            // nothing in the log.
+            ->visibility('private')
+            ->conversion(Sale::THUMBNAIL)
+            ->multiple()
+            ->reorderable()
+            // Without this a second upload replaces the first set rather than
+            // adding to it.
+            ->appendFiles()
+            ->image()
+            ->imageEditor()
+            ->openable()
+            ->downloadable()
+            ->panelLayout('grid')
+            ->maxFiles(5)
+            ->maxSize(5 * 1024)
+            // Repeated from the collection deliberately: this rejects the file in
+            // the browser with a message, the collection rejects it server-side
+            // with an exception. Only one of the two is a good experience, and
+            // only one of the two is enforcement.
+            ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/webp'])
+            ->helperText($helperText.' JPG, PNG atau WEBP, maksimal 5 berkas @ 5 MB.');
     }
 
     /**
-     * The three totals over every line, read from live form state.
+     * The modal and the margin as the form currently stands.
      *
-     * Both prices go through WholeRupiah::toInteger() because while the form is
-     * open they are the grouped strings the user sees — "150.000", not 150000 —
-     * and a bare (int) cast on that answers 150. The same trap the validation
-     * rule avoids, arriving through arithmetic instead.
+     * Every figure goes through WholeRupiah::toInteger() because while the form
+     * is open they are the grouped strings the user sees — "150.000", not
+     * 150000 — and a bare (int) cast on that answers 150. The same trap the
+     * validation rule avoids, arriving through arithmetic instead.
      *
-     * This duplicates what Sale::$catalog_total and friends compute from saved
-     * rows, and the duplication is unavoidable: those read integers off the
+     * This duplicates what Sale::$total_cost and Sale::$profit compute from a
+     * saved row, and the duplication is unavoidable: those read integers off the
      * database, this reads strings out of an unsaved form. What keeps them in
-     * step is that both are sums of `quantity × price` over the same lines, with
-     * no rounding anywhere to disagree about.
+     * step is that both are the same two subtractions with no rounding anywhere
+     * to disagree about.
      *
-     * @return array{catalog: int, marketing: int, profit: int}
+     * @return array{cost: int, profit: int}
      */
-    private static function totals(Get $get): array
+    private static function figures(Get $get): array
     {
-        $catalog = 0;
-        $marketing = 0;
+        $marketing = (int) WholeRupiah::toInteger($get('marketing_price'));
+        $shipping = (int) WholeRupiah::toInteger($get('shipping_cost'));
+        $catalog = (int) WholeRupiah::toInteger($get('catalog_price'));
 
-        foreach ($get('items') ?? [] as $item) {
-            $quantity = (int) ($item['quantity'] ?? 0);
-
-            $catalog += $quantity * (int) WholeRupiah::toInteger($item['catalog_price'] ?? null);
-            $marketing += $quantity * (int) WholeRupiah::toInteger($item['marketing_price'] ?? null);
-        }
+        $cost = $marketing + $shipping;
 
         return [
-            'catalog' => $catalog,
-            'marketing' => $marketing,
-            'profit' => $catalog - $marketing,
+            'cost' => $cost,
+            'profit' => $catalog - $cost,
         ];
+    }
+
+    /**
+     * Grouped the Indonesian way, whole rupiah — not ->money('IDR'), which
+     * renders two decimal places unless told otherwise. See Keuangan.
+     */
+    private static function rupiah(int $amount): string
+    {
+        return 'Rp '.number_format($amount, 0, ',', '.');
     }
 }

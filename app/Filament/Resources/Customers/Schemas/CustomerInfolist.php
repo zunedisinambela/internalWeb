@@ -82,14 +82,14 @@ class CustomerInfolist
     /**
      * The record with its sales and their lines in memory.
      *
-     * Customer's totals walk the relation, so without this each of the three
-     * entries above would trigger its own query per sale. loadMissing() is
+     * Customer's totals walk the sales, so without this each of the three
+     * entries above would trigger its own query. loadMissing() is
      * idempotent, so calling it from every entry costs one load for the page
      * rather than one per entry — and putting the ->with() on the resource query
      * instead would pay for it on the list screen too, which shows none of this.
      */
     private static function loaded(Customer $record): Customer
     {
-        return $record->loadMissing('sales.items');
+        return $record->loadMissing('sales');
     }
 }

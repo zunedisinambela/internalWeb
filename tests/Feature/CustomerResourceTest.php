@@ -6,7 +6,6 @@ use App\Filament\Resources\Customers\CustomerResource;
 use App\Filament\Resources\Customers\Pages\ListCustomers;
 use App\Models\Customer;
 use App\Models\Sale;
-use App\Models\SaleItem;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -68,16 +67,18 @@ class CustomerResourceTest extends TestCase
     {
         $customer = Customer::factory()->named('Ayu')->create();
 
-        $first = Sale::factory()->forCustomer($customer)->create();
-        SaleItem::factory()->forSale($first)->line(quantity: 1, catalog: 200_000, marketing: 150_000)->create();
+        Sale::factory()->forCustomer($customer)
+            ->priced(marketing: 150_000, catalog: 200_000)->create();
 
-        $second = Sale::factory()->forCustomer($customer)->create();
-        SaleItem::factory()->forSale($second)->line(quantity: 2, catalog: 50_000, marketing: 40_000)->create();
+        // The second order was posted, so its Rp 10.000 comes out of the margin
+        // rather than being added to what the customer paid.
+        Sale::factory()->forCustomer($customer)
+            ->priced(marketing: 80_000, catalog: 100_000, shipping: 10_000)->create();
 
         $customer->refresh();
 
         $this->assertSame(300_000, $customer->total_spent);
-        $this->assertSame(70_000, $customer->total_profit);
+        $this->assertSame(60_000, $customer->total_profit);
     }
 
     public function test_a_customer_with_no_sales_totals_zero(): void

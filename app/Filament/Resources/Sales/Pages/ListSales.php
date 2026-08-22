@@ -4,7 +4,6 @@ namespace App\Filament\Resources\Sales\Pages;
 
 use App\Filament\Resources\Sales\SaleResource;
 use App\Models\Customer;
-use App\Models\Product;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 
@@ -17,13 +16,15 @@ class ListSales extends ListRecords
         return [
             CreateAction::make()
                 ->label('Catat penjualan')
-                // Hidden until there is something to sell and somebody to sell
-                // it to. Both selects are required and neither has a free-text
-                // fallback, so the form would otherwise open onto empty lists and
-                // refuse to save with messages naming fields rather than the
-                // missing catalogue. Same rule as ListMeterReadings waiting for a
-                // room.
-                ->visible(fn (): bool => Customer::query()->exists() && Product::query()->exists()),
+                // Hidden until there is somebody to sell to. The customer select
+                // is required and has no free-text fallback, so the form would
+                // otherwise open onto an empty list and refuse to save with a
+                // message naming a field rather than the missing customer. Same
+                // rule as ListMeterReadings waiting for a room.
+                //
+                // Only one prerequisite now that there is no product catalogue —
+                // the prices are typed onto the sale itself.
+                ->visible(fn (): bool => Customer::query()->exists()),
         ];
     }
 }

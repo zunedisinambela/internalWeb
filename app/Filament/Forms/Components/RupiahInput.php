@@ -42,6 +42,17 @@ use Filament\Schemas\Components\Utilities\Set;
  */
 class RupiahInput extends TextInput
 {
+    /**
+     * The floor this field's own WholeRupiah rule is built with.
+     *
+     * A property rather than a constructor argument because setUp() runs at
+     * make() time, before any chained call — so ->allowingZero() cannot replace
+     * a rule that is already registered. The rule below is therefore a closure,
+     * which Filament evaluates at validation time and which reads whatever this
+     * property holds by then.
+     */
+    protected int $minimumRupiah = 1;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -49,7 +60,7 @@ class RupiahInput extends TextInput
         $this->prefix('Rp')
             ->inputMode('numeric')
             ->maxLength(19)
-            ->rule(new WholeRupiah)
+            ->rule(static fn (RupiahInput $component): WholeRupiah => new WholeRupiah(min: $component->minimumRupiah))
             // On blur rather than per keystroke. Filament v5 bundles no Alpine
             // mask plugin — no directive("mask"), no magic("money") anywhere in
             // its dist — so ->mask(RawJs::make('$money(…)')) renders an attribute
@@ -77,6 +88,22 @@ class RupiahInput extends TextInput
             // cannot drift apart.
             ->formatStateUsing(static fn (mixed $state): ?string => WholeRupiah::format($state))
             ->dehydrateStateUsing(static fn (mixed $state): ?int => WholeRupiah::toInteger($state));
+    }
+
+    /**
+     * Accepts Rp 0 as a real figure rather than as an empty field.
+     *
+     * WholeRupiah's floor is 1 by default, which is right for a price — an
+     * amount of nothing is a half-filled form, and ->required() is what should
+     * say so. It is wrong for a cost that is genuinely often nothing: an order
+     * handed over rather than posted has an ongkir of zero, and refusing that
+     * with "Jumlah harus rupiah penuh" describes the wrong problem.
+     */
+    public function allowingZero(): static
+    {
+        $this->minimumRupiah = 0;
+
+        return $this;
     }
 
     /**
