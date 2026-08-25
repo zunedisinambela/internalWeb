@@ -40,6 +40,20 @@ class SalesTable
                     ->sortable()
                     ->weight('medium'),
 
+                TextColumn::make('quantity')
+                    ->label('Jumlah')
+                    ->alignEnd()
+                    ->numeric()
+                    ->sortable()
+                    // Badged only when the order actually earned something, so
+                    // the column is scanned for the exceptions rather than read
+                    // row by row. The bonus has no column behind it and is not
+                    // sortable for that reason — it is a function of `quantity`,
+                    // which sorts identically.
+                    ->description(fn (Sale $record): ?string => $record->free_quantity > 0
+                        ? '+'.$record->free_quantity.' gratis'
+                        : null),
+
                 // The three stored figures, in the order they are read off a
                 // note. Unlike the previous shape these are real columns, so
                 // ->sortable() needs no expression — there is nothing derived

@@ -105,6 +105,124 @@ class SaleResourceTest extends TestCase
     }
 
     /**
+     * **The decision the quantity column rests on.** It counts items; it does
+     * not reinterpret the three price figures, which stay totals for the whole
+     * order.
+     *
+     * Two orders with identical figures and wildly different item counts
+     * therefore cost the same and earn the same. Reading the prices as per-unit
+     * instead would make the second order's margin twenty times the first's, and
+     * nothing on the row would say which reading was meant — the same class of
+     * silent reinterpretation the tariff snapshot under Listrik kost exists to
+     * prevent, arriving through a new column instead of through a join.
+     */
+    public function test_the_quantity_does_not_change_the_money(): void
+    {
+        $one = Sale::factory()->quantity(1)
+            ->priced(marketing: 190_000, catalog: 220_000, shipping: 10_000)->create();
+        $twenty = Sale::factory()->quantity(20)
+            ->priced(marketing: 190_000, catalog: 220_000, shipping: 10_000)->create();
+
+        $this->assertSame($one->total_cost, $twenty->total_cost);
+        $this->assertSame($one->profit, $twenty->profit);
+        $this->assertSame(20_000, $twenty->profit);
+    }
+
+    /**
+     * One free item per FREE_ITEM_THRESHOLD bought, and the count is derived
+     * from the column rather than stored — so correcting a quantity moves the
+     * bonus with it and the two cannot disagree.
+     *
+     * The boundaries are what the rule actually is: 19 earns nothing, 20 earns
+     * one, 39 still earns one, 40 earns two.
+     */
+    public function test_the_free_item_count_is_derived_from_the_quantity(): void
+    {
+        $expected = [1 => 0, 19 => 0, 20 => 1, 39 => 1, 40 => 2];
+
+        foreach ($expected as $quantity => $free) {
+            $sale = Sale::factory()->quantity($quantity)->create();
+
+            $this->assertSame(
+                $free,
+                $sale->free_quantity,
+                "An order of {$quantity} items should earn {$free} free.",
+            );
+        }
+    }
+
+    /**
+     * The free item is a count and nothing else: it is not folded into the
+     * modal or the margin, because whether it is still paid for to Oriflame has
+     * not been decided. Folding a guess in would put a figure on the margin that
+     * nobody entered.
+     */
+    public function test_the_free_item_carries_no_money(): void
+    {
+        $sale = Sale::factory()->quantity(20)
+            ->priced(marketing: 190_000, catalog: 220_000, shipping: 10_000)->create();
+
+        $this->assertSame(1, $sale->free_quantity);
+        $this->assertSame(200_000, $sale->total_cost);
+        $this->assertSame(20_000, $sale->profit);
+    }
+
+    /**
+     * The column was added to a table that already held rows, so its default is
+     * what those rows say. One item is the honest reading of an order recorded
+     * before anyone was counting; zero would make them read as orders of nothing
+     * and would feed the bonus a figure nobody entered.
+     */
+    public function test_a_sale_recorded_without_a_quantity_counts_as_one(): void
+    {
+        $customer = Customer::factory()->create();
+
+        $sale = Sale::create([
+            'customer_id' => $customer->getKey(),
+            'occurred_at' => now(),
+            'marketing_price' => 190_000,
+            'shipping_cost' => 10_000,
+            'catalog_price' => 220_000,
+        ]);
+
+        $this->assertSame(1, $sale->refresh()->quantity);
+        $this->assertSame(0, $sale->free_quantity);
+    }
+
+    /**
+     * On the allowlist beside the three figures. A quantity is what the bonus is
+     * owed on, so a count changed after the fact has to stay explicable from the
+     * log for the same reason a repriced order does.
+     */
+    public function test_a_quantity_correction_is_audited(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $sale = Sale::factory()->quantity(19)->create();
+
+        $sale->update(['quantity' => 20]);
+
+        $entry = Activity::query()->where('log_name', 'sale')->latest('id')->first();
+
+        $this->assertNotNull($entry);
+        $this->assertSame(19, $entry->attribute_changes['old']['quantity']);
+        $this->assertSame(20, $entry->attribute_changes['attributes']['quantity']);
+    }
+
+    /**
+     * One item is the commonest order, so the field starts there rather than
+     * blank — a blank required field reads as the form being broken, the same
+     * reasoning the ongkir default follows.
+     */
+    public function test_the_quantity_defaults_to_one_on_the_form(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        Livewire::test(CreateSale::class)
+            ->assertFormSet(['quantity' => 1]);
+    }
+
+    /**
      * The view screen shows the three figures and the margin they produce.
      */
     public function test_the_view_screen_renders_the_figures_and_the_margin(): void

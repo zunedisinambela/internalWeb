@@ -84,6 +84,7 @@ class Sale extends Model implements HasMedia
     protected $fillable = [
         'customer_id',
         'occurred_at',
+        'quantity',
         'marketing_price',
         'shipping_cost',
         'catalog_price',
@@ -95,6 +96,7 @@ class Sale extends Model implements HasMedia
     {
         return [
             'occurred_at' => 'datetime',
+            'quantity' => 'integer',
             'marketing_price' => 'integer',
             'shipping_cost' => 'integer',
             'catalog_price' => 'integer',
@@ -122,6 +124,39 @@ class Sale extends Model implements HasMedia
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * How many items are bought before one is given away.
+     *
+     * A constant rather than a column on `customers` or a settings row, because
+     * today it is one rule for everybody and a table nobody edits is a table
+     * that drifts out of date silently. When the threshold does start varying
+     * per customer or per month, it becomes a column and this constant becomes
+     * its default — moving it later costs nothing, because the only thing that
+     * reads it is the accessor below.
+     */
+    public const FREE_ITEM_THRESHOLD = 20;
+
+    /**
+     * How many items this order earns for free.
+     *
+     * Derived, never stored, for the reason $profit is: a stored copy would be a
+     * second number able to contradict `quantity`, and nothing on the row would
+     * say which was right. It is also why nothing has to be recalculated when a
+     * quantity is corrected — the figure follows the column by construction.
+     *
+     * **It carries no money yet.** The three price columns are totals for the
+     * whole order and this does not touch them, so `total_cost` and `profit`
+     * read exactly as they did before this column existed. What this answers is
+     * the count question alone: "does this order qualify". Whether the free item
+     * is still paid for to Oriflame — and therefore whether it belongs in
+     * `marketing_price` — is a separate decision that has not been made, and
+     * making it here by inference would put a figure on a margin nobody entered.
+     */
+    protected function freeQuantity(): Attribute
+    {
+        return Attribute::get(fn (): int => intdiv($this->quantity, self::FREE_ITEM_THRESHOLD));
     }
 
     /**
@@ -214,7 +249,7 @@ class Sale extends Model implements HasMedia
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()
-            ->logOnly(['customer_id', 'occurred_at', 'marketing_price', 'shipping_cost', 'catalog_price', 'note'])
+            ->logOnly(['customer_id', 'occurred_at', 'quantity', 'marketing_price', 'shipping_cost', 'catalog_price', 'note'])
             ->logOnlyDirty()
             ->dontLogEmptyChanges()
             ->useLogName('sale');

@@ -22,6 +22,10 @@ class SaleFactory extends Factory
         return [
             'customer_id' => Customer::factory(),
             'occurred_at' => fake()->dateTimeBetween('-3 months', 'now'),
+            // Below the bonus threshold by default, so a test that asserts on a
+            // margin is never handed a free item it did not ask for. Orders that
+            // qualify are built with ->quantity() explicitly.
+            'quantity' => fake()->numberBetween(1, 5),
             'marketing_price' => (int) ($catalog * 0.75),
             'shipping_cost' => fake()->randomElement([0, 10_000, 15_000, 20_000]),
             'catalog_price' => $catalog,
@@ -43,6 +47,15 @@ class SaleFactory extends Factory
             'shipping_cost' => $shipping,
             'catalog_price' => $catalog,
         ]);
+    }
+
+    /**
+     * An exact item count, for the bonus assertions. Random quantities would
+     * make "does this order earn a free item" depend on the seed.
+     */
+    public function quantity(int $quantity): static
+    {
+        return $this->state(fn (): array => ['quantity' => $quantity]);
     }
 
     public function forCustomer(Customer $customer): static

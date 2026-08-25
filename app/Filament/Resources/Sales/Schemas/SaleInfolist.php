@@ -27,6 +27,16 @@ class SaleInfolist
                             ->label('Tanggal pembelian')
                             ->dateTime('d M Y H:i'),
 
+                        TextEntry::make('quantity')
+                            ->label('Jumlah produk')
+                            ->state(fn (Sale $record): string => $record->free_quantity > 0
+                                ? sprintf('%d barang (+%d gratis)', $record->quantity, $record->free_quantity)
+                                : sprintf('%d barang', $record->quantity))
+                            ->helperText(sprintf(
+                                'Setiap %d barang dapat 1 gratis.',
+                                Sale::FREE_ITEM_THRESHOLD,
+                            )),
+
                         TextEntry::make('user.name')
                             ->label('Dicatat oleh')
                             ->placeholder('Tidak diketahui'),
@@ -57,7 +67,7 @@ class SaleInfolist
                     ]),
 
                 Section::make('Ringkasan')
-                    ->columns(2)
+                    ->columns(3)
                     ->components([
                         TextEntry::make('total_cost')
                             ->label('Total modal')
@@ -70,6 +80,20 @@ class SaleInfolist
                             ->weight('bold')
                             ->size('lg')
                             ->color(fn (Sale $record): string => $record->profit < 0 ? 'danger' : 'success'),
+
+                        // Deliberately not folded into the two figures beside
+                        // it. The free item carries no rupiah in this feature —
+                        // whether it is still paid for to Oriflame has not been
+                        // decided — so showing it here as a count keeps the
+                        // margin reading exactly as it did before the column
+                        // existed.
+                        TextEntry::make('free_quantity')
+                            ->label('Gratis')
+                            ->state(fn (Sale $record): string => $record->free_quantity.' barang')
+                            ->weight('bold')
+                            ->size('lg')
+                            ->color(fn (Sale $record): string => $record->free_quantity > 0 ? 'success' : 'gray')
+                            ->helperText('Belum diperhitungkan ke modal maupun keuntungan.'),
                     ]),
 
                 Section::make('Lampiran')
