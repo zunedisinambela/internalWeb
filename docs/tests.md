@@ -1,0 +1,121 @@
+# Tests
+
+`tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
+284 tests at the last count.
+
+| File | Locks in |
+|------|----------|
+| `PanelAccessTest` | roleless/super-admin/guest access, removing the last role locks out |
+| `LoginTest` | both identifiers reach the same account, the username is matched case-insensitively, a roleless user is refused by either, the refusal lands on a field that exists, an '@' cannot enter a username, usernames store lowercase, changes audited |
+| `UserActivityLoggingTest` | what is logged, what is never logged, causer, role grant/revoke |
+| `ActivityLogPanelTest` | list and view render, no create/edit, deletes go to the file log |
+| `LogViewerAccessTest` | guests and roleless users blocked from the page *and* the API |
+| `UserResourceTest` | password hashing, blank-password edits, confirmation, self-delete refusal |
+| `UserMonitoringTest` | package routes stay gone, middleware coverage on both stacks — the panel's and the `web` group's `/log-viewer` — delete auditing |
+| `MonitoringRetentionTest` | retention saves, blank means forever, prune scope and summary |
+| `TwoFactorAuthenticationTest` | password alone is refused, valid code passes, secret never leaks, three audit events, admin reset |
+| `TransactionResourceTest` | policy gating, integer rupiah and what a fractional amount costs, grouped input round-trips and an ambiguous one is left alone, `occurred_at` default, receipts stay private and unsigned reads are refused, each receipt is its own link and the lightbox wrapper is marked, receipt / cascade / bulk delete auditing |
+| `TransactionExportTest` | who may download the book, the two-column ledger and its running balance, chronological order regardless of the table sort, filters carry over, amounts and dates are values rather than text, `0` prints while a blank side stays empty, **both formats queue rather than download** and the job carries the filtered ids and a name stamped at dispatch, the rendered file lands on the private disk and is announced by a database notification, a second click on the same screen queues nothing while a different row set or format still does, the same rows in a different order are one request, an expired file is pruned while a fresh one is kept, both formats audit under one event, the PDF escapes user text and signs a negative balance readably, an empty book still renders |
+| `RoomResourceTest` | policy gating, a room with readings cannot be deleted from the resource *or* the database, deactivation keeps its readings, latest-reading ordering and its `id` tiebreak, occupant changes audited, bulk delete audited per row |
+| `ElectricityTariffTest` | policy gating, the rate in force is the latest that has started, a scheduled rate stays out until its date, an empty table has no rate, two tariffs cannot share a date, author stamped, grouped input round-trips, rate changes audited |
+| `MeterReadingResourceTest` | policy gating, usage and total derived from stored figures, **a later tariff does not change a recorded reading**, the rate field is hidden on both form screens yet still copied onto the row, shown only when there is no tariff, editing does not re-copy the current tariff, **the refresh-rate button fills the form without saving** and only commits through Simpan, takes the tariff in force when the period closed rather than the newest one, hides itself when the rate already matches or no tariff had taken effect, and escapes the tariff note in its confirmation, the form prefills the rate in force and both ends of the previous reading, a room with no history keeps the default opening moment, a closing figure below the opening one is refused, a closing moment before the opening one is refused while an equal one is accepted, author stamped, both reading moments default to now, the create button waits for a room, a photo belongs to the end it was uploaded against, photos stay private and unsigned reads are refused, photo / cascade / bulk delete auditing |
+| `SaleResourceTest` | policy gating, the margin derived from the three stored figures, **the item count does not reprice the order**, the free item derived from the count at each boundary and carrying no money, a sale recorded without a quantity counts as one, the quantity defaults to one on the form and a correction to it is audited, **ongkir is a cost to the consultant rather than a charge to the customer**, grouped input round-trips into integer columns, a zero ongkir is accepted while a zero price is still refused, a marketing price above the catalogue price is refused while an equal one is accepted, a negative margin reported rather than clamped, author stamped, the date defaults to now and ongkir to zero, the create button waits for a customer, price corrections audited, nothing outside the allowlist is logged, one `deleted` entry per sale, attachments uploaded on the create form reach their collections, attachments land on the private disk and an unsigned read is refused, a file belongs to the collection it was uploaded against, a collection holds more than one file, every screen renders with one attached, each attachment is its own link on the view screen and the two collections are separate lightbox groups, the list carries the class its table floor is keyed on, attachment / cascade delete auditing |
+| `CustomerResourceTest` | policy gating, totals summed across every sale with ongkir out of what the customer paid, a customer with no sales totals zero, a customer with sales cannot be deleted from the resource *or* the database, deactivation keeps their sales, phone and address changes audited, a long address survives the round trip, an address is searchable while its column is toggled off, bulk delete audited per row |
+| `PageViewsOnlyTest` (Unit) | which requests count as a visit |
+| `WholeRupiahTest` (Unit) | which amounts are whole rupiah, that untidy grouping is accepted, and that `1500.75` is refused rather than regrouped |
+
+**`phpunit.xml` raises `memory_limit` to 512M**, and that is not decoration. The whole suite runs
+in one process, and `TransactionExportTest` builds real `xlsx` files through phpspreadsheet and
+zipstream — by far the heaviest thing here. Past roughly two hundred tests it began exhausting
+PHP's 128M default, and the failure is a fatal error *inside zipstream* with no assertion
+attached: it reads as a broken export rather than as a memory ceiling. Lower it back and the
+next test file added rediscovers that the hard way.
+
+**A faked disk proves the file landed, not that its link works.** The export tests assert
+`Storage::disk('local')->assertExists('exports/…')`; the signed URL the notification carries is
+only exercised against the real disk, for the reason in the next paragraph.
+
+**`Storage::fake()` cannot test signed URLs.** It replaces the disk's temporary-URL builder with
+a stub returning `URL::to($path.'?expiration=…')` — no signature, no `/storage` prefix — so a
+faked disk always answers 404 for a link that would work in production. The split in
+`TransactionResourceTest` is the way around it: the refusal case runs on a faked disk, because
+`ServeFile` checks the signature *before* it looks for the file; the accepting case writes a
+throwaway file to the real `local` disk and cleans it up in a `finally`.
+
+**A PDF is asserted twice, in two different places.** dompdf compresses object streams, so the
+rendered text is not greppable in the output — assertions on the bytes can only reach as far as
+the `%PDF-` magic. What the document *says* is asserted against the rendered **HTML** instead
+(`view(...)->render()`), which is where escaping and number formatting are decided, and against
+`CashBook`, which is the source both renderers read. `TransactionExportTest` does all three.
+
+Whatever renders a PDF, verify it by eye once as well: `show_warnings` is `false`, so a
+mis-specified font or a missing asset produces a valid document with the problem in it and
+nothing in the log. `pdftotext -layout` is enough to check the page structure, the totals and
+the page numbering without opening a viewer.
+
+**A spreadsheet is asserted by reading it back, not by grepping it.** An `xlsx` is a zip, so
+its cell values are not in the bytes. `TransactionExportTest` renders with
+`Excel::raw($export, Excel::XLSX)`, writes the result to a temp file — phpspreadsheet loads
+from a path, not a string — and inspects cells through `IOFactory::load()`. That is what makes
+the interesting assertions possible at all: `getValue()` proves an amount is an integer rather
+than a formatted string, and `getStyle(...)->getNumberFormat()->getFormatCode()` proves the
+rupiah is a display format rather than part of the data.
+
+**The delivery is a separate concern, and `assertFileDownloaded()` no longer applies** — the
+action queues the render and returns nothing. Two halves, tested apart:
+
+- **What was asked for.** `Bus::fake()`, then `Bus::assertDispatched(ExportCashBook::class, …)`
+  reading the job's public readonly `ids`, `format` and `fileName`. Freeze the clock with
+  `Carbon::setTestNow()` first, since the name carries a timestamp stamped at dispatch.
+- **Whether it was asked for twice.** `Bus::fake()` does *not* bypass the uniqueness lock:
+  `PendingDispatch::shouldDispatch()` acquires it before the dispatcher is reached at all, so
+  `Bus::assertDispatchedTimes(…, 1)` is a genuine assertion about the guard rather than a count
+  of calls. The lock is per-process cache state, which is why these tests work at all under
+  `CACHE_STORE=array` — and why they cannot catch a deploy that sets the same value. See
+  Keuangan.
+- **What came out.** `QUEUE_CONNECTION` is `sync` in `phpunit.xml`, so without `Bus::fake()` the
+  job simply runs inside `callAction()` — which is what lets the audit assertions stay as they
+  were. Pair that with `Storage::fake('local')` or the suite writes real spreadsheets into
+  `storage/app/private/exports` and leaves them there.
+
+`Excel::fake()` with `assertDownloaded()` is not the route here: it asserts an export was
+dispatched rather than what ended up in the cells, and the export is no longer downloaded.
+
+`Tests\TestCase` provides `userWithRole()`, `superAdmin()` and `seedRoles()`. Roles come from
+`ShieldSeeder` so tests exercise the same data a deploy produces, and the permission cache is
+cleared afterwards — without that, a role created mid-test stays invisible to `Gate` checks.
+
+`userWithRole()` derives `username` from whatever address it was given rather than from the role,
+because two users in one test are told apart by their email and a role-keyed username would
+collide between a `superAdmin()` and a second one. Any test that writes a `User` row by hand has
+to supply the column: it is `NOT NULL`, so `User::create()` without it fails on the constraint
+rather than on an assertion. `UserFactory` fills it with a faker `userName()` with dots replaced,
+since the form's `alphaDash` rule is what the value has to look like.
+
+The login form's field is `login`, not `email` — `fillForm(['login' => …])` — and the page under
+test is `App\Filament\Auth\Login`, not Filament's. Testing against the base class silently
+fills nothing, and the assertion that fails is `assertAuthenticatedAs`, which names neither.
+
+`TransactionFactory` has `income()` and `expense()` states, both taking an explicit amount, so a
+test that asserts on a total never depends on a random one. `user_id` defaults to null: the
+model's `creating()` hook fills it from the session, and a factory that guessed an author would
+hide that.
+
+Filament actions are tested through Livewire:
+`Livewire::test(ListVisits::class)->callAction(TestAction::make('delete')->table($record))`,
+and `->selectTableRecords([...])` then `TestAction::make('delete')->table()->bulk()` for the
+bulk path. `callTableAction()` also exists; `TestAction` is the v5 form.
+
+The multi-factor challenge cannot be driven with `fillForm()`. It shares the login form's
+`data` state path and nests each provider under its own id, so the code has to be set directly:
+`->set('data.multiFactor.app.code', $code)`. Generate a valid one with
+`app(AppAuthentication::class)->getCurrentCode($user)`.
+
+The log viewer's API is tested separately from its UI because it has its own middleware stack
+(`api_middleware` in `config/log-viewer.php`) and returns raw log contents.
+
+---
+
+Part of the internalWeb documentation. `CLAUDE.md` in the project root carries the
+always-loaded rules and the map to every other section; a reference here to a section
+name — "see Keuangan", "under Media" — means the file of that name in this directory.
