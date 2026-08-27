@@ -311,9 +311,20 @@ privilege-escalation trail.
 `'password' => 'hashed'`, so Eloquent hashes on assign. Hashing first produces a double hash
 and login silently fails.
 
+**A seeded password never meets the panel's own rule.** `UserForm` puts `Password::default()`
+on the field — Laravel's bare default, so `min(8)` and nothing else, because nothing here calls
+`Password::defaults()` to configure it — with `->confirmed()` beside it. `AdminUserSeeder`
+writes through `User::updateOrCreate()`, which is a plain model write: no form, no rules, no
+confirmation. The account this project shipped with was `admin`, five characters — a value the
+panel would have refused from its own create screen. Whatever is seeded there now, the bypass is
+structural rather than an oversight: validation lives on the form and the seeder does not go
+through one, so a seeded credential is only ever as good as the literal typed into the file.
+
 **Seeders do not write audit entries.** `AdminUserSeeder` uses `WithoutModelEvents`, and
 `LogsActivity` hooks model events. Granting admin through a seeder therefore leaves no trace
-in `activity_log`.
+in `activity_log` — and neither does *changing* that account. `name` and `username` are both on
+the `User` allowlist, so the same edit made at `/users` is audited and the same edit made in the
+seeder is not; the row just has a different identity the next time somebody looks.
 
 **activitylog v5 moved almost everything.** Copying v4 snippets fails on all three:
 
@@ -359,9 +370,21 @@ same word.
 
 `DatabaseSeeder` calls `ShieldSeeder` then `AdminUserSeeder` — that order matters, because the
 admin account is made usable by `syncRoles([super_admin])` and the role has to exist first.
-The account is `admin@admin.com` / `admin`, and its username is `admin` — either identifier
-signs it in (see Sign-in identifiers). Deliberately weak and local-only — there is no
-environment guard on the seeder, so do not run `--seed` against a production database.
+The account is `admin@admin.com` / `Sinambela#123`, its name is `ZUNEDI` and its username is
+`zunedi` — either identifier signs it in (see Sign-in identifiers). The username is lowercase
+because usernames are stored folded and SQLite compares TEXT case sensitively; `Zunedi` would be
+an unknown account.
+
+**The address is the lookup key, not the identity.** `updateOrCreate` matches on
+`admin@admin.com`, so re-seeding after a change to the name, username or password *updates the
+existing row* rather than adding a second admin — and equally, changing the address in the
+seeder would leave the old account behind, still holding `super_admin`. Change the address only
+together with a plan for the row already carrying it.
+
+The password reads like a real one and is committed to the repository, which makes it a local
+credential no matter how it reads — anyone with the repo has it. There is no environment guard
+on the seeder either, so do not run `--seed` against a production database, and rotate the
+password from `/profile` on anything that is not a dev machine.
 
 The seeded account has no second factor, and cannot be given one from a seeder — the secret has
 to be paired with a phone at `/profile`. Anywhere this account exists, two-factor is
