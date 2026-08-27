@@ -2,10 +2,32 @@
 
 `maatwebsite/excel` v4.0.0, writing and reading through `phpoffice/phpspreadsheet` v5.
 
-One export exists: `App\Exports\TransactionsExport`, asked for from the cash book list by
-`ExportTransactionsAction::excel()` and rendered off the request by
-`App\Jobs\ExportCashBook`. It renders `App\Reports\CashBook`, which the PDF report reads as
-well — see Keuangan. Nothing imports yet.
+Four exports exist, one per feature list screen, and they all extend
+`App\Exports\ReportExport`:
+
+| Export | Screen | Report |
+|--------|--------|--------|
+| `TransactionsExport` | `/transactions` | `App\Reports\CashBook` |
+| `SalesExport` | `/sales` | `App\Reports\SalesReport` |
+| `CustomersExport` | `/customers` | `App\Reports\CustomerReport` |
+| `MeterReadingsExport` | `/meter-readings` | `App\Reports\MeterReadingReport` |
+
+Each is asked for by an `App\Filament\Actions\ExportRecordsAction` subclass and rendered off
+the request by an `App\Jobs\ExportReport` subclass. Each renders a `Report`, which its PDF
+sibling reads as well — see Keuangan. Nothing imports yet.
+
+**A subclass says four things and inherits the rest.** `headings()`, `cells()` (one folded line
+as cells, in heading order), `totalsRow()` (or null), and which columns hold money, dates or
+small counts. The base class owns every concern in the `implements` list, the header fill, the
+frozen pane, the appended totals row and its border. Two consequences:
+
+- **The rightmost column is derived from `headings()`, not written down.** A column added to
+  `headings()` and forgotten elsewhere would otherwise leave the header fill and the totals
+  border one cell short — a cosmetic bug nobody reports and nobody can find.
+- **A `cells()` array of a different length than `headings()` misaligns the whole footer and
+  fails nothing.** The only assertion that catches it is reading the generated workbook back;
+  `ReportExportTest::test_the_sales_workbook_puts_its_totals_under_the_right_columns` is the
+  worked example.
 
 ```php
 use Maatwebsite\Excel\Facades\Excel;
@@ -14,11 +36,12 @@ Excel::download(new LaporanExport, 'laporan.xlsx');   // or ->store('local', ...
 ```
 
 A Filament action can return the `BinaryFileResponse` that `download()` produces — Livewire's
-`SupportFileDownloads` intercepts it and turns it into a browser download. **The cash book does
-not**: it renders in `App\Jobs\ExportCashBook` and stores through `Excel::store($export, $path,
-'local')`, so the action returns nothing and the file is announced afterwards. Either way the
-sheet is fully written by the time the call returns, so a count accumulated during the export —
-`CashBook::rowCount()` — is final at that point and can be audited from there.
+`SupportFileDownloads` intercepts it and turns it into a browser download. **Nothing here does**:
+every export renders in an `App\Jobs\ExportReport` subclass and stores through
+`Excel::store($export, $path, 'local')`, so the action returns nothing and the file is announced
+afterwards. Either way the sheet is fully written by the time the call returns, so a count
+accumulated during the export — `Report::rowCount()` — is final at that point and can be audited
+from there.
 
 **`0` and `null` are the same value to `Worksheet::fromArray()`, and this bites twice.** It
 skips any cell equal to its `$nullValue`, comparing loosely — and `0 != null` is `false` in
@@ -39,9 +62,18 @@ absence is a property of what a given export means, not a global preference, and
 export that genuinely wants blank zeros would then have no way to say so. The concern says it
 per export, where the reasoning lives.
 
-`TransactionsExport` does both, and
-`test_a_zero_prints_as_zero_while_a_blank_side_stays_empty` asserts the distinction survives:
-`null` stays an empty cell, `0` prints a zero.
+`ReportExport` does both for every export at once — the concern on the class and
+`strictNullComparison: true` on the `fromArray()` call that writes the totals row — and two tests
+assert the distinction survives:
+`TransactionExportTest::test_a_zero_prints_as_zero_while_a_blank_side_stays_empty` on the ledger,
+where `null` means "not this side of the book", and
+`ReportExportTest::test_a_zero_count_reaches_the_customer_workbook_as_a_zero`, where without it a
+directory of customers who have not bought anything yet prints no counts at all.
+
+The two meanings sit side by side in `MeterReadingsExport::totalsRow()`, which is the clearest
+statement of why this is a per-export decision: the dial columns are `null` because a column of
+meter positions has nothing to add up, while the usage beside them prints a genuine `0` for a
+month the meter did not move.
 
 **Write numbers and dates as values, not as formatted strings.** A figure belongs in the cell
 as an integer with a number format (`'"Rp" #,##0'`) beside it, and a timestamp as
@@ -95,10 +127,10 @@ before anything here writes a second format:
 **Anything queued needs a queue worker**, the same trap medialibrary conversions have under
 Media: `QUEUE_CONNECTION=database`, so without one the job sits in the table, nothing is
 written, and nothing is logged. `php artisan dev` runs `queue:listen`, so it only bites a
-deploy. That now applies to the cash book export, which is queued *as a whole job* — and note
-the distinction, because the two are not the same thing: `TransactionsExport` itself must never
-implement `ShouldQueue`, since laravel-excel would then chunk it across jobs and restart the
-running balance in each one. See Keuangan.
+deploy. That applies to all four exports, which are queued *as whole jobs* — and note the
+distinction, because the two are not the same thing: `ReportExport` itself must never implement
+`ShouldQueue`, since laravel-excel would then chunk it across jobs and restart every `Report`'s
+accumulated totals in each one. See Keuangan.
 
 **`FromQuery` needs a deterministic `ORDER BY`.** It paginates the query to chunk it, so a sort
 that ties — `occurred_at` on rows entered in the same minute, say — silently repeats and drops
@@ -106,15 +138,19 @@ records across page boundaries. Order by something unique, or add `id` as a tieb
 
 **An export is a read surface, so it is gated and audited.** A spreadsheet of records is a bulk
 read of data every screen in the panel gates by policy, and unlike a screen it leaves the
-building. The cash book is the worked example, split across two classes now that the render is
-queued: authorization on the resource (`TransactionResource::canExport()`, checked in
-`ExportTransactionsAction` before anything is dispatched), and an `activity()` entry under the
-`monitoring` log name — written by `ExportCashBook` once the file exists, with the row count,
-the format and the filters that were active. `TransactionExportTest` asserts both. Two things
-that move with the audit call when a read goes onto the queue: the row count is not known until
-the render finishes, and `causedBy()` has to be passed explicitly because a worker has no
-authenticated user. Copy that shape for the next one — nothing else can record a read, since no
-model event fires.
+building. The shape is split across two classes because the render is queued: authorization on
+the resource (`TransactionResource::canExport()` and its three siblings, checked in
+`ExportRecordsAction` before anything is dispatched), and an `activity()` entry under the
+`monitoring` log name — written by `ExportReport` once the file exists, with the row count, the
+format and the filters that were active. `TransactionExportTest` and `ReportExportTest` assert
+both. Two things that move with the audit call when a read goes onto the queue: the row count is
+not known until the render finishes, and `causedBy()` has to be passed explicitly because a
+worker has no authenticated user. Nothing else can record a read, since no model event fires.
+
+**Attachments are counted in a spreadsheet and printed in a PDF.** A cell holding a photograph is
+a floating drawing anchored to a cell: it does not move when the row is sorted and it does not
+survive a CSV round trip. The evidence lives in the PDF — see PDF — and this file carries the
+figures.
 
 ---
 

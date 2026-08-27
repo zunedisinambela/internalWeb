@@ -22,6 +22,7 @@ to send, and is sold on at the catalogue price of Rp 220.000. The margin is Rp 2
 | Owed | `Customer::$free_quantity_claimed` / `$free_quantity_available` |
 | Resi | `free_item_redemptions.tracking_number` plus media collection `FreeItemRedemption::SHIPPING_PROOFS`, private `local` disk |
 | Evidence | media collections `Sale::PAYMENT_PROOFS` / `::SHIPPING_PROOFS`, private `local` disk |
+| Reports | `App\Reports\SalesReport` / `App\Reports\CustomerReport`, exported by `ExportSales` / `ExportCustomers` |
 
 **Ongkir is the consultant's cost, not a line on the customer's bill.** The customer pays
 `catalog_price` and nothing more, so the margin is `catalog − marketing − shipping`. Billing it
@@ -372,12 +373,52 @@ unrelated mechanisms lining up, medialibrary removing files from the `deleting` 
 - **No payment status.** Nothing records whether the customer has paid. `note` is where "bayar
   minggu depan" goes today. A real answer is a column plus a filter plus a total of outstanding
   money, which is a small feature of its own.
-- **No monthly recap, no export.** The list filters by customer and date range, and the figures
-  are on screen; there is no per-month margin report and no spreadsheet.
-  `TransactionsExport` and `App\Reports\CashBook` are the shapes to copy, and Spreadsheet below
-  records what silently goes wrong.
+- **No monthly recap.** Both screens export what is currently filtered — see below — but nothing
+  groups by month. A per-month margin report is a `Report` whose `query()` groups rather than
+  lists, and its totals would be per group rather than one footer.
 - **No products and no stock.** See the removal note above — this is now a ledger of orders, not
   a catalogue.
+
+## Downloading either screen
+
+Both list screens carry `Unduh`, offering `.xlsx` and `.pdf` over whatever the filters currently
+show. The machinery is the cash book's, inherited whole — see Keuangan for the queue, the
+uniqueness lock, the retention and the audit entry, and Spreadsheet for what silently goes wrong
+in a sheet. What is worth recording here is what the two reports *say*, because that is where a
+figure could quietly start disagreeing with a screen.
+
+**`SalesReport` totals the three prices and derives the margin from those sums**, rather than
+summing a per-row margin. The two agree today because the margin is linear; deriving it is what
+keeps them agreeing if it stops being — a discount column, mentioned above as a missing feature,
+is exactly the change that would make a summed margin and a derived one differ. Losses stay
+negative in the footer for the same reason `Sale::$profit` is not clamped.
+
+**The bonus is not on the sales report at all.** It is counted per customer across every order,
+so a per-order figure would answer the same question with a smaller number on every row. It is on
+the customer report, where the total it is counted from lives — `Barang`, `Gratis didapat`,
+`Gratis diambil` and the difference between the last two, which is deliberately not clamped at
+zero for the reason `Customer::$free_quantity_available` gives.
+
+**The customer report reads three aggregates as subqueries, and every one of them answers `null`
+rather than `0`** for a customer with no orders — which is every customer, for a moment.
+`CustomerReport` casts each before use and runs the bonus arithmetic through
+`Customer::freeItemsFor()`, whose parameter is nullable for exactly this reason. That is the same
+trap the customer *list* has, recorded under the aggregate note in CLAUDE.md's Filament
+conventions; the report is the second place it lands and the second place it has to be handled.
+
+**The customer report carries no money.** The margin a customer has produced is walked from their
+orders in PHP on their own view screen; asking for it here would be a second copy of that
+arithmetic as SQL, and two figures able to disagree. What it carries instead is `address` — which
+makes the file a list of where people live, the loosest of the three copies of a home address this
+app holds. See Access control. Nothing about that is more sensitive than the screen it came from;
+what changes is that it now exists outside the panel, where no policy is consulted again, which is
+what the audit entry is for.
+
+**The sales PDF prints both attachment collections, in two columns.** A file already says which it
+is through `collection_name`, and merging them into one cell would throw that away — a resi is the
+one attachment carrying a customer's home address in a form nothing can redact. It prints the
+`thumb` conversion, never the original, so the EXIF a resi photographed at a counter carries does
+not travel with the export. See PDF.
 
 ---
 

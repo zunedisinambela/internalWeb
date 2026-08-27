@@ -74,4 +74,22 @@ class MeterReadingResource extends Resource
             'edit' => EditMeterReading::route('/{record}/edit'),
         ];
     }
+
+    /**
+     * Who may download the meter log.
+     *
+     * The same permission that opens the list, for the reason the cash book
+     * gives: the export shows no column the table does not.
+     *
+     * The PDF prints the dial photographs, which is the point of it — a
+     * disputed bill is settled by comparing a figure against the photograph
+     * taken when it was read. It prints the `thumb` conversion, never the
+     * original, and that is not cosmetic: a meter is bolted to a building, so
+     * the EXIF the phone wrote is the address of a property with tenants in it.
+     * The conversion is re-encoded and loses it. See App\Support\PdfImage.
+     */
+    public static function canExport(): bool
+    {
+        return static::canViewAny();
+    }
 }

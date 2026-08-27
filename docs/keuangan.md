@@ -13,8 +13,15 @@ there to keep them honest.
 | Totals | `Resources/Transactions/Widgets/TransactionOverview` |
 | Receipts | media collection `Transaction::RECEIPTS`, private `local` disk |
 | Ledger | `App\Reports\CashBook` — ordering, running balance and totals, shared by both exports |
-| Export | `Resources/Transactions/Actions/ExportTransactionsAction` — `excel()` and `pdf()`, both dispatch |
-| Render | `App\Jobs\ExportCashBook` — off the request; writes the file, audits it, announces it |
+| Export | `Resources/Transactions/Actions/ExportTransactionsAction` — three methods over `App\Filament\Actions\ExportRecordsAction` |
+| Render | `App\Jobs\ExportCashBook` — one line over `App\Jobs\ExportReport`; writes the file, audits it, announces it |
+
+**The export machinery is shared with three other screens now, and the cash book is where all of
+it was worked out.** Sales, customers and the meter log export through the same
+`Report` / `ReportExport` / `ExportReport` / `ExportRecordsAction` chain — everything below about
+the queue, the uniqueness lock, the retention and the audit entry is inherited by them rather than
+repeated. What stayed here is what is genuinely the book's: the running balance, the two-column
+ledger layout, and the ordering that makes both mean anything.
 
 **Amounts are whole rupiah in an `unsignedBigInteger`, never a decimal.** SQLite has no real
 `DECIMAL` type: `decimal(15,2)` becomes NUMERIC affinity and comes back through PDO as a float,
@@ -132,6 +139,20 @@ spreadsheet is for. So the direction moves into the column layout. The PDF follo
 shape rather than the screen's, because two files downloaded seconds apart disagreeing about
 the layout of the same book would be worse than either choice.
 
+**They differ from each other in exactly one column: Bukti.** The spreadsheet counts the
+receipts; the PDF prints them. That is not an inconsistency to tidy up — a spreadsheet cell
+holding a photograph is a floating drawing anchored to a cell, which does not move when the row is
+sorted and does not survive a CSV round trip, while a PDF is a document somebody hands to
+somebody else and "2" settles no argument about a figure.
+
+What the PDF embeds is the `thumb` conversion, never the original, and that is the part worth not
+losing. The original still carries whatever EXIF the phone wrote; the conversion is re-encoded and
+does not. An export is a file that leaves the building, so the difference is the difference
+between a PDF of receipts and a PDF of receipts carrying the places they were photographed. A
+missing conversion therefore prints a dash rather than falling back to the original — see PDF for
+the rest of `App\Support\PdfImage`'s rules, including why a cell holds two thumbnails and prints
+`+n` for the rest instead of quietly showing fewer.
+
 **`App\Reports\CashBook` is the single source of what the book says** — the ordering, the
 running balance, the totals and the period. Both renderers read it and neither is allowed its
 own opinion; a figure that differed between the two files would be very hard to notice and
@@ -158,8 +179,9 @@ Consequences worth keeping:
 - **`WithStrictNullComparison` is load-bearing, not decoration.** See Spreadsheet.
 
 **Both formats are rendered on the queue, and the action returns nothing.**
-`App\Jobs\ExportCashBook` does the work; `ExportTransactionsAction` only resolves the filtered
-set, dispatches, and says so. Five things follow from that, and each is a decision:
+`App\Jobs\ExportCashBook` does the work — inherited whole from `App\Jobs\ExportReport`, which is
+where the code now lives — and `ExportTransactionsAction` only resolves the filtered set,
+dispatches, and says so. Five things follow from that, and each is a decision:
 
 - **The job carries ids, not the query.** An Eloquent builder holds a `Connection`, which holds
   a PDO handle, and PDO refuses to serialize — dispatching one dies with
@@ -194,7 +216,11 @@ set, dispatches, and says so. Five things follow from that, and each is a decisi
   click again, and that export is silently discarded while the screen says it is being
   processed. Including the row set means only a genuine repeat is refused, and *because* the key
   is the request, the "sedang diproses" flash stays true for the dropped click too — which is
-  what makes it safe to drop it without telling anyone. Two details that fail silently if
+  what makes it safe to drop it without telling anyone. The *report* is not in that key and does
+  not need to be: Laravel's `UniqueLock::getKey()` prefixes `get_class($job)`, so a class per
+  report is what keeps this screen's guard from cancelling the sales screen's export over rows
+  that happen to share ids — and that is the whole reason `ExportCashBook` is still a class
+  carrying one line rather than an argument to a shared job. Two details that fail silently if
   changed: the ids are **sorted before hashing**, since the action calls `reorder()` and the
   same set can come back in a different order, and `$uniqueFor = 900` is longer than
   `$timeout = 600`, since a lock that expires mid-render lets the duplicate through and one that

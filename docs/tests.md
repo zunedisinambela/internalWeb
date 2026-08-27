@@ -1,7 +1,7 @@
 # Tests
 
 `tests/Feature` covers the security-relevant behaviour; run the suite before changing any of it.
-295 tests at the last count.
+334 tests at the last count.
 
 | File | Locks in |
 |------|----------|
@@ -20,13 +20,14 @@
 | `SaleResourceTest` | policy gating, the margin derived from the three stored figures, **the item count does not reprice the order**, the free item derived from the count at each boundary and carrying no money, a sale recorded without a quantity counts as one, the quantity defaults to one on the form and a correction to it is audited, **ongkir is a cost to the consultant rather than a charge to the customer**, grouped input round-trips into integer columns, a zero ongkir is accepted while a zero price is still refused, a marketing price above the catalogue price is refused while an equal one is accepted, a negative margin reported rather than clamped, author stamped, the date defaults to now and ongkir to zero, the create button waits for a customer, price corrections audited, nothing outside the allowlist is logged, one `deleted` entry per sale, attachments uploaded on the create form reach their collections, attachments land on the private disk and an unsigned read is refused, a file belongs to the collection it was uploaded against, a collection holds more than one file, every screen renders with one attached, each attachment is its own link on the view screen and the two collections are separate lightbox groups, the list carries the class its table floor is keyed on, attachment / cascade delete auditing |
 | `FreeItemRedemptionTest` | a handover draws down what is owed without touching what was earned, two free items collected in one handover, nothing collected leaves the whole bonus owed, a bonus collected then unearned reads as a **negative** rather than being clamped, the customer screen carries the three figures and registers the handover table, the form refuses to hand over more than is owed, a second handover measured against what the first one left (the `fresh()` pin), the create button gone once every bonus is collected, an existing handover editable without being refused by itself, the entered date and resi stored, a handover without a resi accepted, the resi photo on the private disk and reaching its collection from the create form, its own log name, the resi photo's removal audited, the author stamped, the list showing what is still owed, a customer with a handover undeletable, gating on the customer's permissions |
 | `CustomerResourceTest` | policy gating, totals summed across every sale with ongkir out of what the customer paid, a customer with no sales totals zero, the free item counted across orders rather than per order (both readings asserted in one test), every whole threshold counted with the distance to the next named, a customer with no sales having earned nothing, the customer bonus leaving both money totals alone, the list showing the summed item count and the bonus it earned, a customer with sales cannot be deleted from the resource *or* the database, deactivation keeps their sales, phone and address changes audited, a long address survives the round trip, an address is searchable while its column is toggled off, bulk delete audited per row |
+| `ReportExportTest` | the three screens that gained an export, and the evidence column the cash book PDF gained with them: that each screen dispatches **its own** job so one screen's double-click guard cannot swallow another's, that each report's totals are its own arithmetic — a derived sales margin, a customer aggregate that arrives `null` rather than `0`, two meter columns that are never multiplied — that the generated workbooks put their totals under the right columns, that every one of the four PDF views escapes user text, that the Bukti column embeds the `thumb` and never the original, that a fourth receipt is counted as `+n` rather than dropped, that a missing file prints a dash instead of nothing, and that the header separator renders as markup rather than printing as `&middot;` |
 | `EditRedirectTest` | that Simpan lands on the list for the four screens worked in daily, that the write happens before the redirect rather than being traded for it, and — the reason the file exists — that a resource **without** the trait still stays on its form, so swapping it for the panel-wide `resourceEditPageRedirect()` cannot pass |
 | `PanelCacheTest` | the balance badge answers a second request without a query, a save and a delete each invalidate it, a write reaches the overview totals as well as the badge, **a null value is cached rather than re-queried** and a forgotten key is resolved again |
 | `PageViewsOnlyTest` (Unit) | which requests count as a visit |
 | `WholeRupiahTest` (Unit) | which amounts are whole rupiah, that untidy grouping is accepted, and that `1500.75` is refused rather than regrouped |
 
 **`phpunit.xml` raises `memory_limit` to 512M**, and that is not decoration. The whole suite runs
-in one process, and `TransactionExportTest` builds real `xlsx` files through phpspreadsheet and
+in one process, and `TransactionExportTest` / `ReportExportTest` build real `xlsx` files through phpspreadsheet and
 zipstream — by far the heaviest thing here. Past roughly two hundred tests it began exhausting
 PHP's 128M default, and the failure is a fatal error *inside zipstream* with no assertion
 attached: it reads as a broken export rather than as a memory ceiling. Lower it back and the
@@ -66,12 +67,21 @@ throwaway file to the real `local` disk and cleans it up in a `finally`.
 rendered text is not greppable in the output — assertions on the bytes can only reach as far as
 the `%PDF-` magic. What the document *says* is asserted against the rendered **HTML** instead
 (`view(...)->render()`), which is where escaping and number formatting are decided, and against
-`CashBook`, which is the source both renderers read. `TransactionExportTest` does all three.
+`CashBook`, which is the source both renderers read. `TransactionExportTest` does all three, and
+`ReportExportTest` repeats the shape for the three reports added after it.
 
 Whatever renders a PDF, verify it by eye once as well: `show_warnings` is `false`, so a
 mis-specified font or a missing asset produces a valid document with the problem in it and
 nothing in the log. `pdftotext -layout` is enough to check the page structure, the totals and
 the page numbering without opening a viewer.
+
+**Since the reports print photographs, `pdftotext` is no longer sufficient on its own** — an
+image dompdf silently declined to load leaves no trace in the text layer.
+`pdftoppm -png -r 90 -f 1 -l 1 file.pdf out` renders the first page and is what caught the one
+bug the whole suite missed: an `&middot;` assembled in PHP and printed through `{{ }}`, which
+looks exactly like correctly-escaped user text in every HTML assertion.
+`ReportExportTest::test_the_header_separator_is_rendered_and_not_printed_as_an_entity` exists
+because of that, and it is the assertion to copy for any separator a report builds in PHP.
 
 **A spreadsheet is asserted by reading it back, not by grepping it.** An `xlsx` is a zip, so
 its cell values are not in the bytes. `TransactionExportTest` renders with

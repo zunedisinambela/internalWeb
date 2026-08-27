@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Sales\Pages;
 
+use App\Filament\Resources\Sales\Actions\ExportSalesAction;
 use App\Filament\Resources\Sales\SaleResource;
 use App\Models\Customer;
 use Filament\Actions\CreateAction;
@@ -14,6 +15,8 @@ class ListSales extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            ExportSalesAction::group(),
+
             CreateAction::make()
                 ->label('Catat penjualan')
                 // Hidden until there is somebody to sell to. The customer select

@@ -108,6 +108,14 @@ a deliberate step up from the public disk, not the end of the road. The full ans
 controller that calls `authorize()` and streams via `Storage::disk(...)->response()`, and it
 becomes worth building the moment these files are linked to from outside the panel.
 
+**One surface deliberately does not use a signed URL at all: the exported PDFs.**
+`App\Support\PdfImage` hands dompdf an absolute filesystem path, because `enable_remote` is
+false — dompdf cannot fetch a URL — and because asking the app for a signed link to a file the
+renderer is standing next to would be a request to fetch our own disk. It resolves only the
+`thumb` conversion, and returns null rather than falling back to the original when that
+conversion is missing: an export is a file that leaves the building with the image *embedded*,
+so the original's EXIF would travel with it. See PDF.
+
 **`php artisan storage:link` is not in `composer setup`.** The symlink is gitignored
 (`/public/storage`), so a fresh clone has no `public/storage` and every `public`-disk media URL
 404s while uploads themselves succeed. Same failure shape as the missing scheduler under

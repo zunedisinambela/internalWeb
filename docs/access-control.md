@@ -28,22 +28,30 @@ separately: a resi carries the customer's home address in a form nothing can red
 photograph. That is the weakest of the three gates by design; what it protects and what it does not
 are set out under Media.
 
-**Home addresses are now held in three places, not one.** `customers.address` is the readable
+**Home addresses are now held in four places, not one.** `customers.address` is the readable
 copy, gated by the customer policy like any other column; a resi is the photographed copy behind
-the signed link above; and `activity_log` holds every previous value, because `address` is on the
-Customer allowlist (see Oriflame for why). The third is the loosest: activity-log retention is
+the signed link above; a **rendered customer export** is a listing of every one of them, behind the
+same signed link and expiring with it; and `activity_log` holds every previous value, because
+`address` is on the Customer allowlist (see Oriflame for why). The last is the loosest: activity-log retention is
 blank by default (see Monitoring), and `ViewAny:Activity` is a different permission from
 `ViewAny:Customer` — so a role given the log but not the customer list can still read where
 people live. Nothing today grants that combination; it is a shape to check before a staff role
 is added.
 
-It carries one thing that is not an upload: a **rendered cash book export** is written to the
-same private disk and reached through the same signed link (see Keuangan). That is a heavier
-payload than a single receipt — one file is the whole filtered book — which is why its link and
-the file itself expire together on `ExportCashBook::RETENTION_HOURS` rather than living as long
-as the row that owns them.
+It carries one thing that is not an upload: a **rendered export** is written to the same private
+disk and reached through the same signed link. There are four of them now — the cash book, sales,
+customers and the meter log (see Keuangan, Oriflame and Listrik kost) — and each is a heavier
+payload than a single receipt, one file being a whole filtered screen. That is why the link and
+the file expire together on `ExportReport::RETENTION_HOURS` rather than living as long as the row
+that owns them.
 
-That export's link is also the one signed URL in this app that is **written down**. Every other
+Two of those four carry attachments *inside* them. The sales and meter PDFs embed the `thumb`
+conversion of every photograph they print, so a resi and a dial photograph now leave the panel in
+a document rather than only behind a per-request signed link. The conversion is what makes that
+acceptable rather than a widening: it is re-encoded and carries none of the EXIF the original
+does — which for a meter photograph is the address of a property with tenants in it. See PDF.
+
+An export's link is also the only signed URL in this app that is **written down**. Every other
 one is minted per request and dies with the page; this one is baked into `notifications.data`
 as part of the action, because the notification has to still work when it is opened tomorrow.
 So for its lifetime the row is as good as the file: anyone who can read that table — a database

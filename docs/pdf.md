@@ -5,10 +5,35 @@ Chrome, no `wkhtmltopdf`, nothing to install on the host. The cost is a renderer
 CSS 2.1 support: no flexbox, no grid, no modern layout. Build PDF Blade views with tables and
 floats, not with anything borrowed from the panel's Tailwind.
 
-One report exists: `resources/views/pdf/buku-kas.blade.php`, asked for from the cash book list
-by `ExportTransactionsAction::pdf()`. No route serves a PDF, and since the render moved onto the
-queue no *response* carries one either: `App\Jobs\ExportCashBook` writes the bytes to the
-private disk and the user is handed a signed link. See Keuangan.
+Four reports exist, one per feature list screen:
+
+| View | Screen | Report class | Job |
+|------|--------|--------------|-----|
+| `pdf/buku-kas.blade.php` | `/transactions` | `App\Reports\CashBook` | `ExportCashBook` |
+| `pdf/penjualan.blade.php` | `/sales` | `App\Reports\SalesReport` | `ExportSales` |
+| `pdf/pelanggan.blade.php` | `/customers` | `App\Reports\CustomerReport` | `ExportCustomers` |
+| `pdf/meteran-listrik.blade.php` | `/meter-readings` | `App\Reports\MeterReadingReport` | `ExportMeterReadings` |
+
+No route serves a PDF, and since the render moved onto the queue no *response* carries one
+either: an `App\Jobs\ExportReport` subclass writes the bytes to the private disk and the user is
+handed a signed link. See Keuangan.
+
+**The four views share everything but their columns.** `resources/views/pdf/partials/` holds the
+stylesheet (`gaya`), the heading block (`kop`), the summary cards (`ringkasan`) and the evidence
+cell (`bukti`); a report view is its `<table>` and nothing else. That is not tidiness — it is the
+only way the four documents stay recognisably the same document. dompdf gives no error for a rule
+it cannot parse, so a stylesheet copied into a fifth view and edited there diverges in silence.
+
+Two things about the partials worth knowing before writing that fifth view:
+
+- **`kop` takes an array of phrases, not a sentence.** The separator between them is `&middot;`,
+  which is *markup*, and every phrase goes through `{{ }}` — so a report that assembles
+  `"2 penjualan &middot; 30 barang"` in PHP prints the entity verbatim on the page. It is a bug
+  no HTML assertion catches, because the escaped form is exactly what a correctly-escaped user
+  string looks like. `ReportExportTest::test_the_header_separator_is_rendered_and_not_printed_as_an_entity`
+  is what tells the two cases apart.
+- **`ringkasan` divides the row evenly** from the number of cards it is handed, so three cards and
+  four cards both fill the width with no per-report CSS.
 
 ```php
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -42,7 +67,7 @@ $pdf->output();                                  // does not re-render
 ```
 
 `page_text()` runs the substitution once per page, so it is also how a footer gets onto every
-page. `$font` is a font *file*, not a family — resolve it with
+page — `App\Jobs\ExportReport::stampFooter()` does it once for all four reports. `$font` is a font *file*, not a family — resolve it with
 `$dompdf->getFontMetrics()->getFont('sans-serif')`. Rendering first and then reaching for the
 canvas is barryvdh's own idiom; `PDF::setEncryption()` does exactly this.
 
@@ -84,7 +109,14 @@ asking for `sans-serif` embeds nothing and stays tiny — `pdf.buku-kas` renders
 about 2.8 KB — while the same view naming DejaVu would embed hundreds of kilobytes per weight
 and start depending on `storage/fonts`. Helvetica's WinAnsi covers `–`, `—` and `·`, which is
 enough for an Indonesian document; reach for DejaVu only when the text genuinely leaves that
-range. `config/dompdf.php` sets `default_font` to `serif`, so an unstyled view gets Times.
+range.
+
+**It does not cover U+2212, the true minus sign**, and that is the one gap with a consequence
+rather than a cosmetic tell. The panel renders a negative amount with U+2212 on screen; a report
+that copied it would print the digits with no sign at all, because dompdf drops a missing glyph
+in silence. `App\Support\Rupiah::format()` uses an ASCII hyphen for that reason, and puts it
+*before* the "Rp" — `number_format()` alone yields "Rp -1.830.000", which reads like a currency
+named "Rp -". All four reports format money through it, so the two decisions are made once. `config/dompdf.php` sets `default_font` to `serif`, so an unstyled view gets Times.
 
 **`show_warnings` is `false`, so font and asset failures are silent.** A `@font-face` that
 cannot be loaded produces a valid PDF in a fallback face and no error anywhere. The size
@@ -112,18 +144,68 @@ Two related settings, both verified at their shipped values:
 | `enable_remote` | `false` | correct — blocks SSRF via `<img src="http://…">`; also means remote CSS and images will not load |
 | `enable_javascript` | `true` | vendor default, not a decision. This is JS embedded *in the PDF* for the viewer to run, useless for reports; `false` is the safer setting |
 
-**A PDF is a read surface, so it is gated and audited like any other.** Generating one fires no
-model event, so nothing records it unless the caller does. The cash book report is the worked
-example: authorization on the resource (`TransactionResource::canExport()`) and an `activity()`
-entry under the `monitoring` log name — the *same* entry the spreadsheet writes, distinguished
-by a `format` property rather than a second event key. A PDF of records the caller cannot open
-in the panel would be a way around the policy that guards the screen.
+### Printing an attachment
 
-**Interpolating user text is where `chroot` stops being theoretical.** `pdf.buku-kas` renders a
-description someone typed into a form, so every value in it goes through `{{ }}`.
-`test_a_description_is_escaped_rather_than_parsed_as_markup` asserts the template never
-switches to `{!! !!}` — a single such change would hand a user's markup to a parser that can
-read `.env`.
+Three of the four reports print the photographs themselves rather than a count of them — the cash
+book's receipts, a sale's transfer receipt and resi, a reading's two dial photographs. That is
+what the Bukti column is for: a disputed figure is settled by looking at the evidence beside it,
+and a column reading "2" settles nothing.
+
+`App\Support\PdfImage` is the only thing that decides what may be printed, and it answers with a
+path or with null:
+
+```php
+PdfImage::paths($record->media, Sale::SHIPPING_PROOFS, Sale::THUMBNAIL)   // array<int, string>
+```
+
+Four decisions are baked into it, each of which fails silently if reversed:
+
+- **A filesystem path, not a URL.** `enable_remote` is false, so dompdf will not fetch `http://`
+  at all — and it must not: a signed link to the private disk goes back through the app to fetch
+  a file the renderer is already standing next to. Attachments live under `storage/app/private`,
+  which is inside `base_path()`, which is dompdf's `chroot`.
+- **Not a `data:` URI either.** It works, and it was rejected on memory: dompdf reads a path
+  lazily, one image at a time, where base64 would put every photograph in the report into one HTML
+  string at four-thirds of its size. A year of meter readings is a few hundred photographs.
+- **Always the `thumb` conversion, never the original.** The re-encode is what drops the EXIF the
+  phone wrote, GPS included, and an export is a file that leaves the building. So a *missing*
+  conversion yields null rather than falling back — a visible gap in one cell beats a silent leak
+  in every one. See the EXIF note in CLAUDE.md's Gotchas.
+- **Null for a file that is gone, or a disk moved outside the project.** dompdf answers all three
+  cases by drawing nothing and logging nothing, `show_warnings` being false, so the check has to be
+  ours; the `bukti` partial prints a dash where the photograph would be.
+
+**A cell fits two thumbnails, and the rest are counted rather than dropped.** The partial prints
+`+n` for the overflow. A report that truncates its own contents without saying so reads as though
+that was all there was.
+
+**The `src` attribute is user-controlled text.** It is assembled from the file name somebody
+uploaded, so it goes through `{{ }}` like any other value — a file name containing a quote would
+otherwise break out of the attribute, into a parser whose chroot is the project root. This is the
+one place where the escaping rule below applies to something that does not look like prose.
+
+**The eager load is the report's job, not the view's.** Each report constrains `media` to the
+collections it prints, so the view reads an already-loaded relation. Drop it and every report
+becomes a query per row, which is invisible on the four-row screen it was tested against.
+
+**A PDF is a read surface, so it is gated and audited like any other.** Generating one fires no
+model event, so nothing records it unless the caller does. Every report here does the same two
+things: authorization on the resource (`TransactionResource::canExport()` and its three siblings,
+each returning `canViewAny()`) and an `activity()` entry under the `monitoring` log name. The
+format is a *property* of that entry rather than a second event key — downloading a report is one
+act and the extension is a detail of it — while each screen has its own event key, so "who took a
+copy of the customer list" is one filter rather than a scan of every properties blob. A PDF of
+records the caller cannot open in the panel would be a way around the policy that guards the
+screen.
+
+**Interpolating user text is where `chroot` stops being theoretical.** All four views render text
+someone typed into a form — a description, a note, a customer's name and address — so every value
+in them goes through `{{ }}`.
+`TransactionExportTest::test_a_description_is_escaped_rather_than_parsed_as_markup` and
+`ReportExportTest::test_user_text_is_escaped_rather_than_parsed_as_markup` cover the four between
+them. The second is a data provider with one case per view rather than one assertion over the
+shared partials, and deliberately so: the escape is per interpolation, so a single `{!! !!}` added
+to any one view is the whole exposure.
 
 ---
 

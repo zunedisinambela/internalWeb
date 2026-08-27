@@ -3,10 +3,11 @@
 namespace App\Reports;
 
 use App\Enums\TransactionType;
+use App\Exports\TransactionsExport;
 use App\Models\Transaction;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Collection;
+use Illuminate\Database\Eloquent\Model;
+use Maatwebsite\Excel\Concerns\FromQuery;
 
 /**
  * The cash book as a ledger: one line per transaction, money in and money out
@@ -35,8 +36,12 @@ use Illuminate\Support\Collection;
  * exactly one walk through the book. Iterating twice would double every total.
  * lines() is the eager equivalent for renderers that cannot stream, and it
  * resets first so the two entry points cannot be mixed by accident.
+ *
+ * The row counter and the period bounds live on App\Reports\Report, which every
+ * downloadable report in this panel extends; the running balance is this class's
+ * own, because nothing else here accumulates one.
  */
-class CashBook
+class CashBook extends Report
 {
     private int $balance = 0;
 
@@ -44,16 +49,24 @@ class CashBook
 
     private int $expense = 0;
 
-    private int $rows = 0;
-
-    /** Bounds of what was actually folded, for the report header. */
-    private ?Carbon $first = null;
-
-    private ?Carbon $last = null;
-
     public function __construct(
         private readonly Builder $query,
     ) {}
+
+    /**
+     * The filtered set as a report, addressed by primary key.
+     *
+     * This is what the queued job builds: a Builder cannot travel on a queue —
+     * it holds a Connection, a Connection holds a PDO handle, and PDO refuses
+     * to serialize — so the filtered rows are resolved to ids at dispatch and
+     * the query is rebuilt here.
+     *
+     * @param  array<int, int>  $ids
+     */
+    public static function forIds(array $ids): static
+    {
+        return new static(Transaction::query()->whereKey($ids));
+    }
 
     /**
      * The caller's filters, in ledger order, with the relations both renderers
@@ -66,6 +79,17 @@ class CashBook
             // The recorder's name is a column of the output; without this it is
             // a query per row.
             ->with('user')
+            // The receipts themselves, for the PDF — the Bukti column prints
+            // the photographs rather than how many there are. Constrained to
+            // the receipts collection so the relation holds nothing else, which
+            // is what lets the view call getMedia() on an already-loaded
+            // relation without going back to the database per row.
+            //
+            // The spreadsheet does not use them and pays for them anyway: one
+            // extra query per chunk, not per row, because this is an eager load
+            // rather than a lazy one. That is cheaper than a second query()
+            // whose eager loads could drift from this one.
+            ->with(['media' => fn ($q) => $q->where('collection_name', Transaction::RECEIPTS)])
             // Scoped to the receipts collection rather than counting `media`
             // outright: today that is the only collection on this model, and a
             // second one added later must not quietly inflate the column.
@@ -83,45 +107,27 @@ class CashBook
      * empty cell reads as "not this side of the book", where a zero reads as a
      * transaction that moved nothing.
      *
+     * @param  Transaction  $record
      * @return array{transaction: Transaction, income: int|null, expense: int|null, balance: int, receipts: int}
      */
-    public function fold(Transaction $transaction): array
+    public function fold(Model $record): array
     {
-        $income = $transaction->type === TransactionType::Income ? $transaction->amount : null;
-        $expense = $transaction->type === TransactionType::Expense ? $transaction->amount : null;
+        $income = $record->type === TransactionType::Income ? $record->amount : null;
+        $expense = $record->type === TransactionType::Expense ? $record->amount : null;
 
-        $this->balance += $transaction->amount * $transaction->type->sign();
+        $this->balance += $record->amount * $record->type->sign();
         $this->income += $income ?? 0;
         $this->expense += $expense ?? 0;
-        $this->rows++;
 
-        // Rows arrive in ledger order, so the first one folded opens the period
-        // and every one after it closes it.
-        $this->first ??= $transaction->occurred_at;
-        $this->last = $transaction->occurred_at;
+        $this->rowCounted($record->occurred_at);
 
         return [
-            'transaction' => $transaction,
+            'transaction' => $record,
             'income' => $income,
             'expense' => $expense,
             'balance' => $this->balance,
-            'receipts' => (int) $transaction->receipts_count,
+            'receipts' => (int) $record->receipts_count,
         ];
-    }
-
-    /**
-     * Every line at once, for a renderer that cannot stream — dompdf builds one
-     * HTML string, so the PDF report has to hold the book in memory anyway.
-     *
-     * @return Collection<int, array{transaction: Transaction, income: int|null, expense: int|null, balance: int, receipts: int}>
-     */
-    public function lines(): Collection
-    {
-        $this->reset();
-
-        return $this->query()
-            ->get()
-            ->map(fn (Transaction $transaction): array => $this->fold($transaction));
     }
 
     /**
@@ -133,43 +139,62 @@ class CashBook
             'income' => $this->income,
             'expense' => $this->expense,
             'balance' => $this->balance,
-            'rows' => $this->rows,
+            'rows' => $this->rowCount(),
         ];
     }
 
-    public function rowCount(): int
+    public function excel(): FromQuery
     {
-        return $this->rows;
+        return new TransactionsExport($this);
+    }
+
+    public function view(): string
+    {
+        return 'pdf.buku-kas';
     }
 
     /**
-     * The period the folded lines actually cover — taken from the rows rather
-     * than from the filter that selected them, because the two differ: a filter
-     * reading "sejak 1 Agustus" on a month with three entries should print the
-     * range those three span, not the open-ended request. Null when nothing was
-     * folded, which is what an empty book has to say instead of a date range.
-     *
-     * Read off the fold rather than queried again, so it costs nothing and
-     * cannot disagree with the lines above it.
-     *
-     * @return array{from: Carbon, until: Carbon}|null
+     * @return array<string, mixed>
      */
-    public function period(): ?array
+    public function viewData(): array
     {
-        if ($this->first === null || $this->last === null) {
-            return null;
-        }
+        // lines() first: totals() and period() are accumulated by the fold and
+        // are only final once every line has been walked.
+        $lines = $this->lines();
 
-        return ['from' => $this->first, 'until' => $this->last];
+        return [
+            'lines' => $lines,
+            'totals' => $this->totals(),
+            'period' => $this->period(),
+        ];
     }
 
-    private function reset(): void
+    public static function label(): string
     {
+        return 'Buku Kas';
+    }
+
+    public static function unit(): string
+    {
+        return 'transaksi';
+    }
+
+    public static function slug(): string
+    {
+        return 'buku-kas';
+    }
+
+    public static function event(): string
+    {
+        return 'transactions_exported';
+    }
+
+    protected function reset(): void
+    {
+        parent::reset();
+
         $this->balance = 0;
         $this->income = 0;
         $this->expense = 0;
-        $this->rows = 0;
-        $this->first = null;
-        $this->last = null;
     }
 }

@@ -73,4 +73,25 @@ class SaleResource extends Resource
             'edit' => EditSale::route('/{record}/edit'),
         ];
     }
+
+    /**
+     * Who may download the sales log.
+     *
+     * Deliberately the same permission that opens the list, and not a new one.
+     * The export carries no column the table does not already show to the same
+     * caller, so a separate gate would restrict the format rather than the
+     * data — anyone refused could still read every figure off the screen.
+     *
+     * What it does change is that the figures leave the panel, and that the PDF
+     * carries the attachments rather than a count of them: a resi is a
+     * photograph of a customer's home address. That is why the download is
+     * audited by the job rather than gated harder. If taking the log out of the
+     * building ever becomes its own privilege, the answer is a Shield
+     * permission generated for this resource, and it goes here — on the
+     * resource, where the record-level checks live, not on the button.
+     */
+    public static function canExport(): bool
+    {
+        return static::canViewAny();
+    }
 }

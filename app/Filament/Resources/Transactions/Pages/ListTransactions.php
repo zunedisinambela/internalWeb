@@ -5,10 +5,8 @@ namespace App\Filament\Resources\Transactions\Pages;
 use App\Filament\Resources\Transactions\Actions\ExportTransactionsAction;
 use App\Filament\Resources\Transactions\TransactionResource;
 use App\Filament\Resources\Transactions\Widgets\TransactionOverview;
-use Filament\Actions\ActionGroup;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
-use Filament\Support\Icons\Heroicon;
 
 class ListTransactions extends ListRecords
 {
@@ -17,18 +15,12 @@ class ListTransactions extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            // Grouped rather than two buttons: it is one act — take a copy of
-            // the book — and the file format is a detail of it. Left of the
-            // create button on purpose, since it reads what the filters
-            // currently show.
-            ActionGroup::make([
-                ExportTransactionsAction::excel(),
-                ExportTransactionsAction::pdf(),
-            ])
-                ->label('Unduh')
-                ->icon(Heroicon::OutlinedArrowDownTray)
-                ->button()
-                ->color('gray'),
+            // One button holding both formats — the grouping, the label and the
+            // icon live on ExportRecordsAction::group() so that the four
+            // screens carrying this cannot end up with four different buttons.
+            // Left of the create button on purpose, since it reads what the
+            // filters currently show.
+            ExportTransactionsAction::group(),
 
             CreateAction::make()->label('Catat transaksi'),
         ];

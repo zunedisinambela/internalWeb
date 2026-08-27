@@ -93,4 +93,23 @@ class CustomerResource extends Resource
             'edit' => EditCustomer::route('/{record}/edit'),
         ];
     }
+
+    /**
+     * Who may download the customer directory.
+     *
+     * The same permission that opens the list, for the reason the cash book
+     * gives: the export shows no column the table does not, so a separate gate
+     * would restrict the format rather than the data.
+     *
+     * It is worth being explicit about what that data is here. `address` is a
+     * column of the export, so the file is a list of where people live — the
+     * loosest of the three copies of a home address this app holds (see Access
+     * control). Nothing about it is more sensitive than the screen it came
+     * from; what changes is that it now exists outside the panel, where no
+     * policy is consulted again. That is what the audit entry is for.
+     */
+    public static function canExport(): bool
+    {
+        return static::canViewAny();
+    }
 }

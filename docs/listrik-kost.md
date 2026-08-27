@@ -8,6 +8,7 @@ it closed at, a photograph behind each, and the amount paid for it.
 | Reading | `App\Models\MeterReading`, `/meter-readings` (`app/Filament/Resources/MeterReadings/`) |
 | Photos | media collections `MeterReading::PHOTOS_START` / `::PHOTOS_END`, private `local` disk |
 | Amount | `App\Filament\Forms\Components\RupiahInput` on `total_amount`, the project's grouped rupiah field |
+| Report | `App\Reports\MeterReadingReport`, exported by `App\Jobs\ExportMeterReadings` |
 
 **This panel records a bill; it does not compute one.** That is the shape of the whole feature
 and the shortest way to predict what belongs in it. The two meter figures are evidence of how
@@ -185,9 +186,36 @@ untested: `user_id` is fillable and written on every row, and it must stay out o
   cheap additions because a bill was assembled here out of parts. It no longer is — the amount
   arrives already containing whatever the landlord charged. Recording the parts again would mean
   recording a breakdown the tenant is not given.
-- **No bill to hand anyone.** The panel shows the total; there is no per-period PDF or
-  spreadsheet. `pdf.buku-kas` and `TransactionsExport` are the shapes to copy, and PDF and
-  Spreadsheet record what silently goes wrong in each.
+- **No bill to hand anyone.** The log exports as a whole — see below — but there is no per-period
+  document addressed to a tenant. That is a different thing from a report: it would need a
+  recipient, an amount owed and a date, none of which this feature holds.
+
+## Downloading the log
+
+The list carries `Unduh`, offering `.xlsx` and `.pdf` over whatever the filters currently show.
+The machinery is the cash book's, inherited whole — see Keuangan for the queue, the uniqueness
+lock, the retention and the audit entry. Three things are this feature's own:
+
+**Two independent columns, and no third derived from them.** The footer totals the kWh consumed
+and the rupiah paid, separately. There is deliberately no "harga per kWh" anywhere in the export:
+dividing one column by the other would produce, by inference, exactly the figure two migrations
+were run to stop this feature holding. The report is the easiest place for that to creep back,
+because the two numbers are sitting next to each other and the division is one line.
+
+**The dial figures are not totalled either.** They are meter positions, and a column of positions
+has no sum. `MeterReadingsExport::totalsRow()` writes `null` into those two cells, which
+`WithStrictNullComparison` correctly renders as empty — beside a genuine `0` for a month the meter
+did not move. The two meanings are one cell apart, which is the clearest statement of why that
+concern is a per-export decision rather than a global setting. See Spreadsheet.
+
+**The PDF prints both photographs, in two columns keyed to the two figures.** That is the whole
+reason the photographs are two collections rather than one: a disputed bill is settled by
+comparing the opening figure against the photograph taken when the period opened, and a single
+collection could express that pairing only by upload order. It prints the `thumb` conversion,
+never the original, and here that is the sharpest version of the rule in this project — a meter is
+bolted to a building, so the EXIF coordinates on an original are the address of a property with
+tenants in it, and an export is a file that leaves the building. See PDF for the rest of
+`App\Support\PdfImage`'s rules.
 
 ---
 

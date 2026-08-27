@@ -12,7 +12,7 @@ vendor/bin/pint      # format; no pint.json, so Laravel preset defaults apply
 php artisan migrate:fresh --seed   # rebuild sqlite + seed admin user
 php artisan schedule:work          # NOT part of `composer dev` — see Monitoring
 php artisan monitoring:prune       # apply retention now instead of waiting for 03:00
-php artisan exports:prune          # delete finished cash book exports past their link expiry
+php artisan exports:prune          # delete finished report exports past their link expiry
 php artisan storage:link           # NOT part of `composer setup` — see Media
 php artisan cache:clear            # last resort for a stuck navigation badge — see Gotchas
 ```
@@ -57,13 +57,23 @@ php artisan cache:clear            # last resort for a stuck navigation badge �
   image entry that put medialibrary into the panel. A separate package from Filament, and it
   pins medialibrary to `^11.0`. See Media.
 - **barryvdh/laravel-dompdf v3.1** on `dompdf/dompdf` v3 — HTML-to-PDF, facade
-  `Barryvdh\DomPDF\Facade\Pdf`. Pure PHP, no headless browser, no system binary. One report,
-  on the cash book. v3.1.2 is the first release with `illuminate ^13`. See PDF.
+  `Barryvdh\DomPDF\Facade\Pdf`. Pure PHP, no headless browser, no system binary. Four reports —
+  the cash book, sales, customers and the meter log — built from one abstraction, and three of
+  them print the attachments themselves rather than a count of them. v3.1.2 is the first release
+  with `illuminate ^13`. See PDF.
 - **maatwebsite/excel v4** on `phpoffice/phpspreadsheet` v5 — spreadsheet import and export,
-  facade `Maatwebsite\Excel\Facades\Excel`. One export, on the cash book. **v4, not the
+  facade `Maatwebsite\Excel\Facades\Excel`. Four exports, one per feature list screen, over a
+  shared `App\Exports\ReportExport` base. **v4, not the
   3.1 line the search results and most tutorials still point at** — see Spreadsheet.
-- **The queue is load-bearing for one feature.** `QUEUE_CONNECTION=database`, and the cash book
-  export is rendered by `App\Jobs\ExportCashBook` rather than in the request — so a deploy
+- **`App\Reports\` is the seam between the two.** A `Report` owns what a screen's download
+  *says* — the ordering, the eager loads, the per-row line and the totals accumulated as the rows
+  are walked — and knows nothing about queues or file formats. Its spreadsheet and its PDF both
+  read it, so a figure cannot disagree between two files downloaded five seconds apart. Four
+  exist: `CashBook`, `SalesReport`, `CustomerReport`, `MeterReadingReport`. Adding a fifth
+  downloadable screen is a `Report`, a `ReportExport`, a Blade view and two one-line subclasses —
+  not a copy of the queue plumbing.
+- **The queue is load-bearing for four screens.** `QUEUE_CONNECTION=database`, and every export
+  is rendered by an `App\Jobs\ExportReport` subclass rather than in the request — so a deploy
   without `queue:work` produces no file, no notification and no error. The finished file is
   announced through Filament's database notifications, which is why the panel calls
   `->databaseNotifications()` and a `notifications` table exists. The **cache** store is
@@ -131,7 +141,8 @@ rendering as the raw key. That also means a forgotten translation is easy to mis
 
 - Activity log `event` keys (`role_granted`, `role_revoked`, `visit_deleted`, `sign_in_deleted`,
   `records_pruned`, `two_factor_reset`, `receipt_deleted`, `meter_photo_deleted`,
-  `sale_attachment_deleted`, `redemption_resi_deleted`, `transactions_exported`), enum values stored in columns (`income`, `expense` —
+  `sale_attachment_deleted`, `redemption_resi_deleted`, `transactions_exported`,
+  `sales_exported`, `customers_exported`, `meter_readings_exported`), enum values stored in columns (`income`, `expense` —
   see Keuangan), role names (`super_admin`) and permission names (`Delete:Activity`).
   These are filtered on and asserted in tests. Only the human-readable description is
   translated — `LogRoleChange` and `User::booted()` both map the two separately for exactly
@@ -154,13 +165,13 @@ expensive to undo.
 | File | Covers | True even if you never open it |
 |------|--------|--------------------------------|
 | `docs/access-control.md` | roles, the panel gate, the log-viewer gate, sign-in identifiers, two-factor | Roles are the only source of truth — there is no `is_admin` column, and any role opens the panel. Either the email or the username signs a user in. |
-| `docs/keuangan.md` | the cash book at `/transactions`, receipts, the queued Excel/PDF export | Amounts are whole rupiah in an integer column, never a decimal. The export renders on the queue, so no worker means no file **and no error**. |
-| `docs/listrik-kost.md` | meter readings at `/meter-readings`, their photographs, the amount paid | One screen, one meter. The panel **records** a bill, it does not compute one: `total_amount` is typed off the bill and `usage_kwh` is derived from the two meter figures, with nothing multiplying the one by the other. Rooms, a versioned tariff table and a rate per kWh all used to sit here and were dropped in turn; the file records what each of those migrations destroyed. |
-| `docs/oriflame.md` | sales and customers, the three figures, the item count, the bonus and its handovers | The three prices are totals for the whole order; `quantity` counts items and reprices nothing. Ongkir is the consultant's cost, not a line on the customer's bill. The free item is counted **per customer across every order**, never per sale — `Sale::$free_quantity` still exists and has no UI. What was *earned* is derived from the orders; what was *collected* is a recorded row, and the two must not be merged. |
+| `docs/keuangan.md` | the cash book at `/transactions`, receipts, the queued Excel/PDF export | Amounts are whole rupiah in an integer column, never a decimal. The export renders on the queue, so no worker means no file **and no error**. Its Bukti column prints the receipt itself, and prints the `thumb` conversion rather than the original — the original still carries the phone's EXIF. |
+| `docs/listrik-kost.md` | meter readings at `/meter-readings`, their photographs, the amount paid, the export | One screen, one meter. The panel **records** a bill, it does not compute one: `total_amount` is typed off the bill and `usage_kwh` is derived from the two meter figures, with nothing multiplying the one by the other. Rooms, a versioned tariff table and a rate per kWh all used to sit here and were dropped in turn; the file records what each of those migrations destroyed. |
+| `docs/oriflame.md` | sales and customers, the three figures, the item count, the bonus and its handovers, the two exports | The three prices are totals for the whole order; `quantity` counts items and reprices nothing. Ongkir is the consultant's cost, not a line on the customer's bill. The free item is counted **per customer across every order**, never per sale — `Sale::$free_quantity` still exists and has no UI. What was *earned* is derived from the orders; what was *collected* is a recorded row, and the two must not be merged. |
 | `docs/monitoring.md` | `/visits`, `/authentications`, `/activities`, retention at `/monitoring` | The package's own six routes are unauthenticated and are disabled by an empty `routes/user-monitoring.php`. Deleting that file brings them all back. |
-| `docs/media.md` | medialibrary, the six collections, the private disk, the lightbox | Attachments go on the private `local` disk, and every Filament component rendering one needs `->visibility('private')` — without it the image silently breaks and nothing is logged. |
-| `docs/pdf.md` | dompdf, `resources/views/pdf/` | dompdf's `chroot` is `base_path()` with `file://` allowed, so user text interpolated into a PDF view can reach `.env`. Escape with `{{ }}`, never `{!! !!}`. |
-| `docs/spreadsheet.md` | maatwebsite/excel v4, `App\Exports\` | `Worksheet::fromArray()` drops every `0` unless the export implements `WithStrictNullComparison`. Silently — the cell is simply never created. |
+| `docs/media.md` | medialibrary, the six collections, the private disk, the lightbox | Attachments go on the private `local` disk, and every Filament component rendering one needs `->visibility('private')` — without it the image silently breaks and nothing is logged. A PDF is the one surface that reads them off disk instead, through `App\Support\PdfImage`. |
+| `docs/pdf.md` | dompdf, `resources/views/pdf/`, the four reports and their shared partials | dompdf's `chroot` is `base_path()` with `file://` allowed, so user text interpolated into a PDF view can reach `.env`. Escape with `{{ }}`, never `{!! !!}` — an image `src` included, since it is assembled from an uploaded file name. |
+| `docs/spreadsheet.md` | maatwebsite/excel v4, `App\Exports\`, the `ReportExport` base | `Worksheet::fromArray()` drops every `0` unless the export implements `WithStrictNullComparison`. Silently — the cell is simply never created. |
 | `docs/tests.md` | what each test file locks in, and how to test Filament, PDFs, spreadsheets and signed URLs | Any test that hits a route needs `RefreshDatabase`: every page request writes a visit row. |
 
 The three features that exist for their own sake are Keuangan, Listrik kost and Oriflame;
@@ -177,6 +188,16 @@ solve it: all render the `thumb`
 conversion everywhere, so the original is only reached by a deliberate signed request. Nothing
 strips the original, and stripping it would be a decision about altering what a user uploaded.
 
+**The exported PDFs are held to the same rule, and there it is load-bearing rather than
+incidental.** A screen shows a thumbnail to somebody already inside the panel; an export is a
+file that leaves the building with the image *embedded*, so a fallback to the original would
+carry the coordinates out with it. `App\Support\PdfImage::path()` therefore returns null when
+the conversion is missing rather than reaching for the original — a visible gap in one cell
+instead of a silent leak in every one. It is also the only place in this app that reads an
+attachment off the disk rather than through a signed URL, which is correct: `enable_remote` is
+false, so dompdf cannot fetch a URL, and asking the app for a signed link to a file the renderer
+is standing next to would be a request to fetch our own disk.
+
 That matters more for meter photographs than for receipts. A receipt is photographed wherever
 it happens to be; a meter is bolted to the building, so its EXIF coordinates are the address of
 a property with tenants in it. A sale's attachments sit between the two: a transfer receipt is
@@ -184,15 +205,16 @@ usually a screenshot and carries nothing, while a resi photographed at the count
 wherever that counter was. The resi on a free-item handover is the same photograph taken for the
 same reason, so it sits at the same end of that range.
 
-**User-typed text reaches three kinds of surface, and each escapes differently.** A transaction
+**User-typed text reaches four kinds of surface, and each escapes differently.** A transaction
 description, a meter reading's note, a sale note, a handover's note or tracking number,
-and a customer's address are all free
-text somebody typed into a form. Verified against the vendor source rather than assumed, because
-the three do not behave alike:
+a customer's address — and, less obviously, the **name of an uploaded file** — are all free
+text somebody typed or chose. Verified against the vendor source rather than assumed, because
+the four do not behave alike:
 
 | Surface | What actually happens |
 |---------|-----------------------|
 | a Blade view | `{{ }}` escapes, `{!! !!}` does not. In a **PDF** view the stakes are higher than XSS: dompdf's `chroot` is `base_path()` and `file://` is in `allowed_protocols`, so parsed markup can reach `.env` — and `APP_KEY` decrypts every user's two-factor secret. See PDF. |
+| an **HTML attribute** in a Blade view — today only an image `src` in the four PDF reports | same `{{ }}`, and it is easy to forget it is needed: the value is a filesystem path rather than prose. It is assembled from the uploaded file name, so a quote in that name closes the attribute early and the rest of it is parsed as markup — by the parser in the row above. `App\Support\PdfImage` returns the path; escaping it is the view's job. |
 | a Filament description or heading — `->modalDescription()`, `Callout`, `Section`, empty state | all rendered `{{ $description }}`. A plain **`string` is escaped**; an **`Htmlable` is not**, because Laravel's `e()` passes `Htmlable` straight through to `toHtml()`. |
 | `Notification::title()` / `::body()` | neither escaped nor raw — both go through `str(...)->sanitizeHtml()`. Scripts and event attributes are stripped, but **markup is still interpreted**, so a customer name containing `<b>` renders bold rather than showing the tag. |
 
@@ -452,10 +474,13 @@ resi photograph removed — kept out of `sale` and `customer` because "when did 
 free item" is a question read past both of them otherwise) and `customer` (the Oriflame feature
 — see Oriflame),
 and `monitoring`
-(deletions, prunes, and both cash book exports — a read that leaves the panel is recorded
-here rather than under `transaction`, because it is an operation on the book rather than a
-change to it; the export entry is written by the queued job rather than by the request, so its
-causer is passed explicitly).
+(deletions, prunes, and every export from the four feature list screens — a read that leaves the
+panel is recorded here rather than under the feature's own log name, because it is an operation
+on the book rather than a change to it; the export entry is written by the queued job rather than
+by the request, so its causer is passed explicitly. One event key per screen, not one shared key:
+all four write under `monitoring`, so a shared key would make "who took a copy of the customer
+list" unanswerable without reading every properties blob. The *format* is a property rather than
+a second key, because downloading a report is one act and the file extension is a detail of it).
 Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
 
 ## Filament conventions
@@ -477,6 +502,12 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   `Filament::getPanel('admin')->getResources()` are the two things to check — the latter returns
   nine, and a helper class that accidentally becomes the tenth costs nothing visible until it
   collides with a slug (see the empty-path note under Stack notes).
+  **`app/Filament/Actions/` sits beside the three scanned directories and is not one of them.**
+  `discoverResources()`, `discoverPages()` and `discoverWidgets()` each name their directory
+  explicitly, so a fourth sibling is invisible to all three — which is why the cross-resource
+  action base lives there rather than under a resource. Adding a directory under `app/Filament`
+  is safe; adding one *inside* `Resources`, `Pages` or `Widgets` is what the filter order above
+  is about.
 - Generate with `php artisan make:filament-resource`, `make:filament-page`, `make:filament-widget`.
 - v5 renamed the filter builder: use `->schema([...])`, not the deprecated `->form([...])`.
 - **A page's body is a schema, not Blade.** v5 has no `filament-panels::form.actions`
@@ -608,6 +639,10 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   impossible. See Oriflame and Listrik kost.
   `Transaction::$amount` is the one field left spelling the trio out inline rather than using
   this component; converting it is a change to tested financial code, not a tidy-up.
+  **The PDF reports have their own formatter and it is not this one.** `App\Support\Rupiah`
+  prints a figure for print rather than for a form, and the difference is not cosmetic: it uses
+  an ASCII hyphen because U+2212 is absent from Helvetica's WinAnsi and dompdf drops a missing
+  glyph in silence, which would print a negative figure as a positive one. See PDF.
 - **`->stripCharacters()` is validation-only.** `TextInput::mutateStateForValidation()` applies
   it; `mutateDehydratedState()` does not. What is *stored* is the unstripped state, so pair it
   with `->dehydrateStateUsing()` — or the rules see one value and the column receives another.
@@ -619,8 +654,14 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   class under `Resources/<Name>/Actions/`, returning a configured `Action` from a static
   `make()`. Filament's own MFA actions have that shape. Two copies of an authorization rule is
   one copy too many. Variants of one action live in the *same* class as several static
-  factories over a shared private base — `ExportTransactionsAction::excel()` and `::pdf()`
+  factories over a shared private base — `ExportRecordsAction::excel()` and `::pdf()`
   differ only in the renderer, and splitting them would duplicate the gate and the audit call.
+  **And an action repeated across resources belongs in `app/Filament/Actions/`**, with a subclass
+  per resource naming only what differs. `ExportRecordsAction` is the worked example: four
+  screens export, and what varies between them is three methods — the job, the gate and the
+  qualified primary key. The rest, including the "sedang diproses" notification and the
+  `getFilteredTableQuery()` call that must not become `getFilteredSortedTableQuery()`, is written
+  once.
   **More than one mount point is sufficient reason, not the only one.** An action carrying real
   logic — a built-out confirmation, a state diff, a notification — belongs in its own class from
   the first mount, so the page class stays a list of what is on the page.
@@ -638,6 +679,12 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   one: `SaleInfolist::attachments()` derives each entry's `data-lightbox` key from the collection
   it was handed, so the two evidence strips stay separate viewers without either call being
   written out twice. See Media.
+  **The PDF reports answer the same question with a partial rather than a method.**
+  `resources/views/pdf/partials/` holds the stylesheet, the heading, the summary cards and the
+  evidence cell; a report view is its `<table>` and nothing else. Same failure mode, one step
+  worse: dompdf raises nothing for a rule it cannot parse — `show_warnings` is `false` — so a
+  stylesheet copied into a fifth view and edited there produces a valid document that has quietly
+  stopped matching the other four. See PDF.
 - **An action that returns a download must return a `BinaryFileResponse` or a
   `StreamedResponse`.** Livewire's `SupportFileDownloads` intercepts exactly those two; any
   other response object falls through to the ordinary return path and Livewire tries to
@@ -646,16 +693,21 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   `Pdf::download()` does not, so wrap it in `response()->streamDownload(...)`. See PDF.
   **An action that queues the render returns nothing at all**, which sidesteps this entirely —
   and buys a different obligation: the request has ended before the file exists, so a flash
-  message can no longer deliver it. `ExportTransactionsAction` flashes "sedang diproses" and
-  `ExportCashBook` sends a database notification carrying a signed link. Dropping the second
+  message can no longer deliver it. `ExportRecordsAction` flashes "sedang diproses" and
+  `ExportReport` sends a database notification carrying a signed link. Dropping the second
   half leaves a job that writes a file nobody is ever told about.
 - **A double click is guarded on the job, not on the button.** `->disabled()` after a click, a
   `->requiresConfirmation()`, a spinner — none of them survive a second browser tab, a
   double-submit, or a user who reloads and clicks again, and all of them are client state. The
   server-side answer is `ShouldBeUnique` with a `uniqueId()` that describes the *request*, so a
-  genuine repeat is refused and a changed one is not. `ExportCashBook` is the worked example, and
+  genuine repeat is refused and a changed one is not. `ExportReport` is the worked example, and
   the sharp edge is that a wrong key fails silently in both directions — too broad and it
   discards legitimate work, too narrow and it guards nothing. See Keuangan.
+  **The job class is part of the key and does not have to be written into it.** Laravel's
+  `UniqueLock::getKey()` prefixes `get_class($job)`, so a class per report is what keeps one
+  screen's guard from cancelling another's export over rows that happen to share ids — which is
+  the whole reason `ExportCashBook`, `ExportSales`, `ExportCustomers` and `ExportMeterReadings`
+  are four classes carrying one line each rather than one job taking a report argument.
 - **A hidden field is not saved.** `->hidden()` / `->visible(false)` makes `isDehydrated()`
   return false, and the component's state path is stripped from the payload — so a field hidden
   to tidy a form silently stops writing its column. Pair it with `->dehydratedWhenHidden()`
