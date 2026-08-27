@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\PanelCache;
 use Database\Factories\ElectricityTariffFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -60,6 +61,20 @@ class ElectricityTariff extends Model
         static::creating(function (self $tariff): void {
             $tariff->user_id ??= auth()->id();
         });
+
+        // The navigation badge caches whichever row is currently in force, so
+        // any write to this table can change it — a new row, a corrected date
+        // on an old one, or a deletion that promotes the row beneath it.
+        //
+        // This only covers writes. The other way the current rate changes is
+        // the clock reaching a row dated in the future, and no event fires for
+        // that; PanelCache::rateTtl() is where that half is decided.
+        $flush = static function (): void {
+            PanelCache::forget(PanelCache::RATE);
+        };
+
+        static::saved($flush);
+        static::deleted($flush);
     }
 
     public function user(): BelongsTo

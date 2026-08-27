@@ -14,6 +14,7 @@ php artisan schedule:work          # NOT part of `composer dev` — see Monitori
 php artisan monitoring:prune       # apply retention now instead of waiting for 03:00
 php artisan exports:prune          # delete finished cash book exports past their link expiry
 php artisan storage:link           # NOT part of `composer setup` — see Media
+php artisan cache:clear            # last resort for a stuck navigation badge — see Gotchas
 ```
 
 ## Stack notes
@@ -68,6 +69,18 @@ php artisan storage:link           # NOT part of `composer setup` — see Media
   load-bearing there as well — the job is `ShouldBeUnique`, and that lock lives in the cache, so
   `CACHE_STORE` has to be a store shared across processes. See Keuangan.
 - **Database is SQLite** (`database/database.sqlite`), gitignored via `database/.gitignore`.
+- **`CACHE_STORE` has two consumers, and each one rules out a different driver.** The export
+  lock above needs a store every *process* can see, including the queue worker — so a `file`
+  store split across a web box and a worker box guards nothing. The panel figures in
+  `App\Support\PanelCache` need a store that survives between *requests*, which rules out
+  `array`, and they are forgotten by name because the `database` store has no tag support.
+  Together those leave `database`, `redis` or `memcached`. See the `PanelCache` entry under
+  Gotchas.
+
+  `phpunit.xml` sets `array` anyway, and that is correct rather than an exception being made:
+  the suite runs `QUEUE_CONNECTION=sync`, so there is no second process for the lock to be
+  shared with, and a cache that dies with the test is what keeps one test's cached balance out
+  of the next one. `PanelCacheTest` exercises the caching within a single test for that reason.
   Tests run against `:memory:` (see `phpunit.xml`), so they never touch the dev database.
 - Frontend: Vite 8 + Tailwind 4. Filament ships its own compiled CSS/JS and does not go
   through the app's Vite build — so `resources/css/app.css` styles nothing in the panel, which
@@ -190,6 +203,58 @@ quietly dropped, because the escape is one call that reviews cleanly whether it 
 `App\Policies\XPolicy`. `Activity` lives in a vendor namespace, so `ActivityPolicy` is
 registered by hand in `AppServiceProvider::registerVendorModelPolicies()`. Without that line
 the policy is silently ignored and every permission check on it passes. Shield prints a
+**Cached figures live in `App\Support\PanelCache`, and it is a data cache, not a page
+cache.** The panel owns the root path, so its sidebar renders on every screen — each navigation
+badge is an aggregate query paid on pages that have nothing to do with it. Three keys are held
+across requests: the cash book balance, the overview totals, and the current kWh rate.
+
+Full-page HTTP caching was rejected rather than skipped, and for three reasons that are all
+silent failures rather than slowdowns:
+
+| What breaks | Why |
+|---|---|
+| access control | Shield gates every page per user; one user's cached HTML is another user's data |
+| the audit trail | `RecordVisit` sits in the panel's own middleware stack, so a response served from cache is a page view `/visits` never sees |
+| Livewire | the CSRF token is baked into the markup and goes stale with the page; `databaseNotificationsPolling('30s')` polls a frozen page |
+
+Three things to know before adding a key:
+
+- **`CACHE_STORE=database` has no tags.** `Cache::tags()` throws on that store rather than
+  degrading, so every key is a named constant on `PanelCache` and is forgotten by name from the
+  model that changes it. That store is shared with the `ExportCashBook` unique-job lock — see
+  the queue note above — so it has to stay a driver every process can see.
+- **`Cache::remember()` treats `null` as a miss.** An unset tariff is a real answer, so the
+  value is wrapped in an array by `PanelCache::remember()`. Without that the query re-runs on
+  every page load and the cache still looks like it is working.
+- **The cache stops at the presentation layer.** `ElectricityTariff::currentRate()` is cached on
+  the *badge*, never in the model: `MeterReadingForm` defaults its rate field from the same
+  method and that figure is copied onto the reading and billed from there (see Listrik kost). A
+  stale badge is a wrong sidebar; a stale default is a wrong tenant bill, permanently.
+  `PanelCacheTest::test_the_model_rate_is_never_served_from_the_badge_cache` is what holds that
+  line.
+
+Invalidation is event-driven from `Transaction::booted()` and `ElectricityTariff::booted()` —
+`saved` *and* `deleted`, because either alone misses half the writes. Model events are the whole
+mechanism, so the two ways a badge can go stale are both ways of changing a row without firing
+one: a raw `UPDATE` in tinker or sqlite, and the clock reaching a tariff dated in the future —
+that second one is what `PanelCache::rateTtl()` decides. `php artisan cache:clear` is the escape
+hatch for both, and it costs at most three queries on the next page load — one per key.
+
+It is safe to run against a queued export, and not by luck: `DatabaseStore::flush()` deletes the
+`cache` table only, while a `ShouldBeUnique` lock lives in `cache_locks`, and `cache:clear`
+touches that second table only when given `--locks`. So the unique guard on `ExportCashBook`
+survives a badge flush. Reaching for `--locks` to unstick something is the move that would break
+it.
+
+**A static memo is not a cache, and the two are stacked on purpose.** `TransactionResource::$balance`
+and `ElectricityTariffResource::$currentRate` hold the figure for the rest of the request
+because Filament asks for a badge and its colour in two separate calls; `PanelCache` holds it
+across requests. Dropping the static puts a cache round-trip on the second call, dropping the
+cache puts the aggregate back on every page load. The static assumes a process that ends with
+the response — under Octane or any persistent worker it would outlive its request. It already
+outlives a *test*, which is why `PanelCacheTest` resets both in `setUp()`; without that a test
+reads what the previous test left behind and the cache layer is never exercised.
+
 "requires registration" note when generating such policies — do not skip it.
 
 **Shield prints that note for `RolePolicy` too, and there it is wrong.** Its own service

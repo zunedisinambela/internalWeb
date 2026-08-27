@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\TransactionType;
+use App\Support\PanelCache;
 use Database\Factories\TransactionFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -67,6 +68,21 @@ class Transaction extends Model implements HasMedia
         static::creating(function (self $transaction): void {
             $transaction->user_id ??= auth()->id();
         });
+
+        // The balance badge and the overview stats are aggregates over this
+        // whole table, so any row that lands, moves or leaves invalidates both.
+        // Listed as two events rather than one: `saved` misses a deletion,
+        // and `deleted` alone misses an amount being corrected. There is no
+        // SoftDeletes here, so `restored` has nothing to fire on.
+        //
+        // This is what makes it safe to cache the two figures indefinitely —
+        // neither has a clock in it, unlike the tariff rate. See PanelCache.
+        $flush = static function (): void {
+            PanelCache::forget(PanelCache::BALANCE, PanelCache::TOTALS);
+        };
+
+        static::saved($flush);
+        static::deleted($flush);
     }
 
     public function user(): BelongsTo

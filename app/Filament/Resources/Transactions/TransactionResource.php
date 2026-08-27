@@ -10,6 +10,7 @@ use App\Filament\Resources\Transactions\Schemas\TransactionForm;
 use App\Filament\Resources\Transactions\Schemas\TransactionInfolist;
 use App\Filament\Resources\Transactions\Tables\TransactionsTable;
 use App\Models\Transaction;
+use App\Support\PanelCache;
 use BackedEnum;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
@@ -102,12 +103,26 @@ class TransactionResource extends Resource
      * Filament asks for the badge and its colour in two separate calls, so the
      * result is held for the rest of the request. Without this the sidebar costs
      * two identical aggregate queries on every page of the panel.
+     *
+     * Two layers, and each one covers what the other cannot. The static holds
+     * the figure for the rest of *this* request; PanelCache holds it across
+     * requests, so the aggregate is not re-run on the next page either. Dropping
+     * the static would put a cache round-trip on the second call; dropping the
+     * cache would put the SUM back on every page load.
+     *
+     * Kept indefinitely rather than on a timer, because Transaction::booted()
+     * forgets the key on every save and delete — there is no path by which this
+     * total changes without a row being written. See App\Support\PanelCache.
      */
     protected static ?int $balance = null;
 
     protected static function balance(): int
     {
-        return static::$balance ??= Transaction::balance();
+        return static::$balance ??= PanelCache::remember(
+            PanelCache::BALANCE,
+            ttl: null,
+            callback: static fn (): int => Transaction::balance(),
+        );
     }
 
     public static function getPages(): array

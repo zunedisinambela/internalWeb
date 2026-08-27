@@ -8,6 +8,7 @@ use App\Filament\Resources\ElectricityTariffs\Pages\ListElectricityTariffs;
 use App\Filament\Resources\ElectricityTariffs\Schemas\ElectricityTariffForm;
 use App\Filament\Resources\ElectricityTariffs\Tables\ElectricityTariffsTable;
 use App\Models\ElectricityTariff;
+use App\Support\PanelCache;
 use BackedEnum;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
@@ -79,11 +80,24 @@ class ElectricityTariffResource extends Resource
     /**
      * Null is a real answer here — an empty table means no tariff has been set —
      * so it cannot be cached with `??=`, which would re-query on every call.
+     * PanelCache::remember() has the same problem and solves it the same way,
+     * by wrapping the value rather than testing it.
+     *
+     * **The cache stops at this method.** ElectricityTariff::currentRate() is
+     * also what MeterReadingForm defaults its rate field from, and that figure
+     * is *copied onto the reading* and billed from there — see
+     * docs/listrik-kost.md. A stale badge is a wrong number on a sidebar; a
+     * stale default is a wrong number on a tenant's bill, permanently. So the
+     * model method stays live and only this presentation path is cached.
      */
     protected static function currentRate(): ?int
     {
         if (! static::$currentRateResolved) {
-            static::$currentRate = ElectricityTariff::currentRate();
+            static::$currentRate = PanelCache::remember(
+                PanelCache::RATE,
+                ttl: PanelCache::rateTtl(),
+                callback: static fn (): ?int => ElectricityTariff::currentRate(),
+            );
             static::$currentRateResolved = true;
         }
 

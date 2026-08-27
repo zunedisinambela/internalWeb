@@ -4,6 +4,7 @@ namespace App\Filament\Resources\Transactions\Widgets;
 
 use App\Enums\TransactionType;
 use App\Models\Transaction;
+use App\Support\PanelCache;
 use Filament\Support\Icons\Heroicon;
 use Filament\Widgets\StatsOverviewWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
@@ -22,17 +23,8 @@ class TransactionOverview extends StatsOverviewWidget
 {
     protected function getStats(): array
     {
-        // One pass over the table for both totals rather than two aggregate
-        // queries. SUM over a CASE returns null on an empty table, hence the
-        // coalesce — without it the first page of a fresh install renders an
-        // empty stat instead of zero.
-        $totals = Transaction::query()
-            ->selectRaw('COALESCE(SUM(CASE WHEN type = ? THEN amount ELSE 0 END), 0) AS income', [TransactionType::Income->value])
-            ->selectRaw('COALESCE(SUM(CASE WHEN type = ? THEN amount ELSE 0 END), 0) AS expense', [TransactionType::Expense->value])
-            ->first();
+        ['income' => $income, 'expense' => $expense] = static::totals();
 
-        $income = (int) $totals->income;
-        $expense = (int) $totals->expense;
         $balance = $income - $expense;
 
         return [
@@ -51,6 +43,42 @@ class TransactionOverview extends StatsOverviewWidget
                 ->descriptionIcon($balance < 0 ? Heroicon::ArrowTrendingDown : Heroicon::ArrowTrendingUp)
                 ->color($balance < 0 ? 'danger' : 'primary'),
         ];
+    }
+
+    /**
+     * Money in and money out over the whole table, cached across requests.
+     *
+     * One pass rather than two aggregate queries. SUM over a CASE returns null
+     * on an empty table, hence the coalesce — without it the first page of a
+     * fresh install renders an empty stat instead of zero.
+     *
+     * The balance is derived here rather than selected, so it cannot disagree
+     * with the two figures printed above it. It is deliberately *not* read from
+     * PanelCache::BALANCE either: that key is filled by Transaction::balance(),
+     * a separate aggregate, and two independently cached figures that are
+     * supposed to add up is exactly how a stats card starts contradicting
+     * itself. Both keys are forgotten by the same model events, but only one of
+     * them is the source for this card.
+     *
+     * @return array{income: int, expense: int}
+     */
+    protected static function totals(): array
+    {
+        return PanelCache::remember(
+            PanelCache::TOTALS,
+            ttl: null,
+            callback: static function (): array {
+                $totals = Transaction::query()
+                    ->selectRaw('COALESCE(SUM(CASE WHEN type = ? THEN amount ELSE 0 END), 0) AS income', [TransactionType::Income->value])
+                    ->selectRaw('COALESCE(SUM(CASE WHEN type = ? THEN amount ELSE 0 END), 0) AS expense', [TransactionType::Expense->value])
+                    ->first();
+
+                return [
+                    'income' => (int) $totals->income,
+                    'expense' => (int) $totals->expense,
+                ];
+            },
+        );
     }
 
     /**
