@@ -17,16 +17,8 @@ class MeterReadingInfolist
         return $schema
             ->components([
                 Section::make('Pencatatan meteran')
-                    ->columns(3)
+                    ->columns(2)
                     ->components([
-                        TextEntry::make('room.name')
-                            ->label('Kamar')
-                            ->weight('bold'),
-
-                        TextEntry::make('room.occupant')
-                            ->label('Penghuni')
-                            ->placeholder('Kosong'),
-
                         TextEntry::make('usage_kwh')
                             ->label('Pemakaian')
                             ->formatStateUsing(fn (int $state): string => number_format($state, 0, ',', '.').' kWh')
@@ -75,15 +67,20 @@ class MeterReadingInfolist
                             ]),
                     ]),
 
-                // The rate is deliberately absent here, the way it is absent from
-                // both form screens: it is not a figure decided at the meter, and
-                // showing it beside the total invites reading the bill as a sum
-                // that could be recomputed from today's tariff. The snapshot on
-                // the row is still what produced this figure — it is reachable as
-                // a toggleable column on the list, and every change to it is in
-                // the activity log.
+                // The rate is shown here now, which it was not while a separate
+                // tariff screen existed: back then a rate printed beside the
+                // total invited recomputing the bill from *today's* tariff,
+                // which is the one number that must never be applied to a period
+                // already closed. There is no other rate to confuse it with any
+                // more — this row carries the only one — so printing both halves
+                // of the multiplication is what makes the total checkable.
                 Section::make('Tagihan')
+                    ->columns(2)
                     ->components([
+                        TextEntry::make('rate')
+                            ->label('Tarif per kWh')
+                            ->formatStateUsing(fn (int $state): string => 'Rp '.number_format($state, 0, ',', '.').' /kWh'),
+
                         TextEntry::make('total_amount')
                             ->label('Total tagihan')
                             ->formatStateUsing(fn (int $state): string => 'Rp '.number_format($state, 0, ',', '.'))

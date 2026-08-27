@@ -2,10 +2,8 @@
 
 namespace Tests\Feature;
 
-use App\Filament\Resources\ElectricityTariffs\ElectricityTariffResource;
 use App\Filament\Resources\Transactions\TransactionResource;
 use App\Filament\Resources\Transactions\Widgets\TransactionOverview;
-use App\Models\ElectricityTariff;
 use App\Models\Transaction;
 use App\Support\PanelCache;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -25,8 +23,8 @@ class PanelCacheTest extends TestCase
     use RefreshDatabase;
 
     /**
-     * The two resources hold their per-request figure in a static property, and
-     * a static outlives a test — RefreshDatabase rebuilds the schema and the
+     * The resource holds its per-request figure in a static property, and a
+     * static outlives a test — RefreshDatabase rebuilds the schema and the
      * array cache store is rebuilt with the container, but the class is not
      * reloaded. Without this, a test reads the figure the previous test left
      * behind and the cache layer is never exercised at all.
@@ -74,33 +72,17 @@ class PanelCacheTest extends TestCase
         return $method->invoke(null);
     }
 
-    protected function currentRate(): ?int
-    {
-        $method = new \ReflectionMethod(ElectricityTariffResource::class, 'currentRate');
-        $method->setAccessible(true);
-
-        return $method->invoke(null);
-    }
-
     /**
-     * Clears the per-request statics the two resources hold alongside the
-     * cache. They are static properties, so within one test process they
-     * survive between calls and would mask whether the cache layer works at
-     * all — every test here has to start from a cold class.
+     * Clears the per-request static the resource holds alongside the cache. It
+     * is a static property, so within one test process it survives between
+     * calls and would mask whether the cache layer works at all — every test
+     * here has to start from a cold class.
      */
     protected function forgetRequestMemo(): void
     {
-        foreach ([[TransactionResource::class, 'balance', null]] as [$class, $property, $value]) {
-            $reflected = new \ReflectionProperty($class, $property);
-            $reflected->setAccessible(true);
-            $reflected->setValue(null, $value);
-        }
-
-        foreach ([['currentRate', null], ['currentRateResolved', false]] as [$property, $value]) {
-            $reflected = new \ReflectionProperty(ElectricityTariffResource::class, $property);
-            $reflected->setAccessible(true);
-            $reflected->setValue(null, $value);
-        }
+        $reflected = new \ReflectionProperty(TransactionResource::class, 'balance');
+        $reflected->setAccessible(true);
+        $reflected->setValue(null, null);
     }
 
     public function test_the_balance_badge_is_answered_from_cache_on_a_second_request(): void
@@ -166,51 +148,51 @@ class PanelCacheTest extends TestCase
     }
 
     /**
-     * An empty tariff table is a real answer, not a miss. Cache::remember()
-     * would re-run the query on every call for a null value, which is why
-     * PanelCache wraps it — and why the failure would otherwise be invisible.
+     * Null is a real answer, not a miss.
+     *
+     * `Cache::remember()` re-runs its callback whenever the stored value is
+     * null, so a figure whose true answer is "none" would pay its query on
+     * every page of the panel while the cache still looked like it was working.
+     * `PanelCache::remember()` wraps the value in an array to make that a hit.
+     *
+     * Asserted against the helper directly rather than through a badge. The
+     * tariff badge used to be what exercised it and was removed with the tariff
+     * screen; nothing cached today returns null, so this is the only thing
+     * standing between the wrapper and a silent deletion.
      */
-    public function test_an_unset_tariff_is_cached_rather_than_re_queried(): void
+    public function test_a_null_value_is_cached_rather_than_re_queried(): void
     {
-        $this->assertNull($this->currentRate());
+        $calls = 0;
+        $resolve = function () use (&$calls): ?int {
+            $calls++;
 
-        $this->forgetRequestMemo();
+            return null;
+        };
 
-        $queries = $this->countQueries(fn () => $this->assertNull($this->currentRate()));
+        $this->assertNull(PanelCache::remember('panel:test:null', null, $resolve));
+        $this->assertNull(PanelCache::remember('panel:test:null', null, $resolve));
 
-        $this->assertSame(0, $queries, 'A null rate fell through the cache and hit the database again.');
-    }
-
-    public function test_saving_a_tariff_invalidates_the_rate_badge(): void
-    {
-        ElectricityTariff::factory()->rate(1_500, now()->subMonth()->toDateString())->create();
-
-        $this->assertSame(1_500, $this->currentRate());
-        $this->forgetRequestMemo();
-
-        ElectricityTariff::factory()->rate(2_000, now()->toDateString())->create();
-        $this->forgetRequestMemo();
-
-        $this->assertSame(2_000, $this->currentRate());
+        $this->assertSame(1, $calls, 'A null value fell through the cache and re-ran its query.');
     }
 
     /**
-     * The line the cache must not cross.
-     *
-     * ElectricityTariff::currentRate() is what MeterReadingForm defaults its
-     * rate field from, and that figure is copied onto the reading and billed
-     * from there — see docs/listrik-kost.md. Caching it would make a stale
-     * badge into a wrong tenant bill, permanently, so the model method stays
-     * live no matter what the badge has stored.
+     * The other half: forgetting by name is the only invalidation there is,
+     * because CACHE_STORE is `database` and that store throws on Cache::tags()
+     * rather than degrading. A key nobody forgets is a figure that never moves.
      */
-    public function test_the_model_rate_is_never_served_from_the_badge_cache(): void
+    public function test_a_forgotten_key_is_resolved_again(): void
     {
-        ElectricityTariff::factory()->rate(1_500, now()->subMonth()->toDateString())->create();
+        $calls = 0;
+        $resolve = function () use (&$calls): int {
+            $calls++;
 
-        $this->currentRate();
+            return 7;
+        };
 
-        Cache::put(PanelCache::RATE, ['value' => 999], 60);
+        $this->assertSame(7, PanelCache::remember('panel:test:number', null, $resolve));
+        PanelCache::forget('panel:test:number');
+        $this->assertSame(7, PanelCache::remember('panel:test:number', null, $resolve));
 
-        $this->assertSame(1_500, ElectricityTariff::currentRate());
+        $this->assertSame(2, $calls, 'forget() left the old value in place.');
     }
 }

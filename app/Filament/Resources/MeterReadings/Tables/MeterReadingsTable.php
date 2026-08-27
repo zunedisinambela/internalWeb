@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\MeterReadings\Tables;
 
 use App\Models\MeterReading;
-use App\Models\Room;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
@@ -13,7 +12,6 @@ use Filament\Forms\Components\DatePicker;
 use Filament\Tables\Columns\SpatieMediaLibraryImageColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\Filter;
-use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
@@ -25,7 +23,7 @@ class MeterReadingsTable
         return $table
             // Newest first, like the cash book: a meter log is read from the
             // most recent entry back. Sorted on the closing moment, which is what
-            // dates the period — see MeterReading::previousFor().
+            // dates the period — see MeterReading::previous().
             ->defaultSort('end_read_at', 'desc')
             ->columns([
                 TextColumn::make('end_read_at')
@@ -46,13 +44,6 @@ class MeterReadingsTable
                     ->dateTime('d M Y H:i')
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
-
-                TextColumn::make('room.name')
-                    ->label('Kamar')
-                    ->searchable()
-                    ->sortable()
-                    ->weight('medium')
-                    ->description(fn (MeterReading $record): ?string => $record->room?->occupant),
 
                 TextColumn::make('start_kwh')
                     ->label('kWh awal')
@@ -105,12 +96,6 @@ class MeterReadingsTable
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
-                SelectFilter::make('room_id')
-                    ->label('Kamar')
-                    ->relationship('room', 'name', fn (Builder $query): Builder => $query->orderBy('name'))
-                    ->searchable()
-                    ->preload(),
-
                 // Matched on the closing moment only, not on either end. A period
                 // that straddles the boundary belongs to the month it closed in,
                 // which is the month it is billed in; matching both ends would
@@ -165,9 +150,7 @@ class MeterReadingsTable
                 ]),
             ])
             ->emptyStateHeading('Belum ada pencatatan')
-            ->emptyStateDescription(fn (): string => Room::query()->exists()
-                ? 'Catat angka meteran kamar pertama Anda.'
-                : 'Tambahkan kamar terlebih dahulu di menu Kamar.');
+            ->emptyStateDescription('Catat angka meteran awal dan akhir periode ini, lalu tarif per kWh-nya.');
     }
 
     /**

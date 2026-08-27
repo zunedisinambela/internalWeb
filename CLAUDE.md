@@ -155,7 +155,7 @@ expensive to undo.
 |------|--------|--------------------------------|
 | `docs/access-control.md` | roles, the panel gate, the log-viewer gate, sign-in identifiers, two-factor | Roles are the only source of truth — there is no `is_admin` column, and any role opens the panel. Either the email or the username signs a user in. |
 | `docs/keuangan.md` | the cash book at `/transactions`, receipts, the queued Excel/PDF export | Amounts are whole rupiah in an integer column, never a decimal. The export renders on the queue, so no worker means no file **and no error**. |
-| `docs/listrik-kost.md` | rooms, versioned tariffs, meter readings at `/meter-readings` | The rate is **copied** onto a reading, never joined to. A tariff raised today must not reprice a bill already issued. |
+| `docs/listrik-kost.md` | meter readings at `/meter-readings`, their photographs, the rate | One screen, one meter. The rate **lives on the reading**, never anywhere shared — a price entered this month must not reprice a bill already issued. Rooms and a versioned tariff table used to sit beside it and were dropped; the file records what that migration destroyed. |
 | `docs/oriflame.md` | sales and customers, the three figures, the item count, the bonus and its handovers | The three prices are totals for the whole order; `quantity` counts items and reprices nothing. Ongkir is the consultant's cost, not a line on the customer's bill. The free item is counted **per customer across every order**, never per sale — `Sale::$free_quantity` still exists and has no UI. What was *earned* is derived from the orders; what was *collected* is a recorded row, and the two must not be merged. |
 | `docs/monitoring.md` | `/visits`, `/authentications`, `/activities`, retention at `/monitoring` | The package's own six routes are unauthenticated and are disabled by an empty `routes/user-monitoring.php`. Deleting that file brings them all back. |
 | `docs/media.md` | medialibrary, the six collections, the private disk, the lightbox | Attachments go on the private `local` disk, and every Filament component rendering one needs `->visibility('private')` — without it the image silently breaks and nothing is logged. |
@@ -185,7 +185,7 @@ wherever that counter was. The resi on a free-item handover is the same photogra
 same reason, so it sits at the same end of that range.
 
 **User-typed text reaches three kinds of surface, and each escapes differently.** A transaction
-description, a room's occupant, a tariff note, a sale note, a handover's note or tracking number,
+description, a meter reading's note, a sale note, a handover's note or tracking number,
 and a customer's address are all free
 text somebody typed into a form. Verified against the vendor source rather than assumed, because
 the three do not behave alike:
@@ -194,19 +194,22 @@ the three do not behave alike:
 |---------|-----------------------|
 | a Blade view | `{{ }}` escapes, `{!! !!}` does not. In a **PDF** view the stakes are higher than XSS: dompdf's `chroot` is `base_path()` and `file://` is in `allowed_protocols`, so parsed markup can reach `.env` — and `APP_KEY` decrypts every user's two-factor secret. See PDF. |
 | a Filament description or heading — `->modalDescription()`, `Callout`, `Section`, empty state | all rendered `{{ $description }}`. A plain **`string` is escaped**; an **`Htmlable` is not**, because Laravel's `e()` passes `Htmlable` straight through to `toHtml()`. |
-| `Notification::title()` / `::body()` | neither escaped nor raw — both go through `str(...)->sanitizeHtml()`. Scripts and event attributes are stripped, but **markup is still interpreted**, so an occupant name containing `<b>` renders bold rather than showing the tag. |
+| `Notification::title()` / `::body()` | neither escaped nor raw — both go through `str(...)->sanitizeHtml()`. Scripts and event attributes are stripped, but **markup is still interpreted**, so a customer name containing `<b>` renders bold rather than showing the tag. |
 
 So the trap is narrow and specific: reaching for `HtmlString` to get a list or a line break in a
 description, and carrying a user value in with it. Returning a plain string needs nothing.
-`RefreshRateAction` is the worked example — its confirmation is an `HtmlString` carrying a
-*tariff note*, which is user text arriving from a table nobody thinks of as user input, and it
-runs through `e()`. `test_the_rate_refresh_confirmation_names_both_rates_and_escapes_the_tariff_note` is what keeps that from being
-quietly dropped, because the escape is one call that reviews cleanly whether it is there or not.
+
+**Nothing in the project does this today** — the worked example was `RefreshRateAction`, whose
+confirmation carried a tariff note into an `HtmlString` and ran it through `e()`, and it was
+removed with the tariff screen (see Listrik kost). So the next `HtmlString` written here is the
+first one, with no neighbour to copy the escape from. Pair it with a test asserting the escaped
+form, because `e()` is one call that reviews cleanly whether it is there or not.
 
 **Cached figures live in `App\Support\PanelCache`, and it is a data cache, not a page
 cache.** The panel owns the root path, so its sidebar renders on every screen — each navigation
-badge is an aggregate query paid on pages that have nothing to do with it. Three keys are held
-across requests: the cash book balance, the overview totals, and the current kWh rate.
+badge is an aggregate query paid on pages that have nothing to do with it. Two keys are held
+across requests: the cash book balance and the overview totals. A third held the current kWh
+rate and went with the tariff badge — see Listrik kost.
 
 Full-page HTTP caching was rejected rather than skipped, and for three reasons that are all
 silent failures rather than slowdowns:
@@ -223,22 +226,24 @@ Three things to know before adding a key:
   degrading, so every key is a named constant on `PanelCache` and is forgotten by name from the
   model that changes it. That store is shared with the `ExportCashBook` unique-job lock — see
   the queue note above — so it has to stay a driver every process can see.
-- **`Cache::remember()` treats `null` as a miss.** An unset tariff is a real answer, so the
-  value is wrapped in an array by `PanelCache::remember()`. Without that the query re-runs on
-  every page load and the cache still looks like it is working.
-- **The cache stops at the presentation layer.** `ElectricityTariff::currentRate()` is cached on
-  the *badge*, never in the model: `MeterReadingForm` defaults its rate field from the same
-  method and that figure is copied onto the reading and billed from there (see Listrik kost). A
-  stale badge is a wrong sidebar; a stale default is a wrong tenant bill, permanently.
-  `PanelCacheTest::test_the_model_rate_is_never_served_from_the_badge_cache` is what holds that
-  line.
+- **`Cache::remember()` treats `null` as a miss**, so a figure whose real answer is "none"
+  re-runs its query on every page load while the cache still looks like it is working.
+  `PanelCache::remember()` wraps the value in an array to make null a hit. Nothing cached today
+  returns null — the tariff badge that did was removed — so
+  `PanelCacheTest::test_a_null_value_is_cached_rather_than_re_queried` asserts the wrapper
+  directly. It is the only thing standing between that wrapper and a tidy-looking deletion.
+- **The cache stops at the presentation layer.** A badge may serve a stale figure; anything a
+  bill is computed from may not. That line used to be held by keeping the kWh badge off the
+  method the reading form defaulted its rate from; it is now held by there being no shared rate
+  at all — every reading carries its own (see Listrik kost). Re-derive the rule before caching
+  any figure a form defaults from: a stale badge is a wrong sidebar, a stale default is a wrong
+  bill, permanently.
 
-Invalidation is event-driven from `Transaction::booted()` and `ElectricityTariff::booted()` —
-`saved` *and* `deleted`, because either alone misses half the writes. Model events are the whole
-mechanism, so the two ways a badge can go stale are both ways of changing a row without firing
-one: a raw `UPDATE` in tinker or sqlite, and the clock reaching a tariff dated in the future —
-that second one is what `PanelCache::rateTtl()` decides. `php artisan cache:clear` is the escape
-hatch for both, and it costs at most three queries on the next page load — one per key.
+Invalidation is event-driven from `Transaction::booted()` — `saved` *and* `deleted`, because
+either alone misses half the writes. Model events are the whole mechanism, so the way a badge
+goes stale is any way of changing a row without firing one: a raw `UPDATE` in tinker or sqlite.
+`php artisan cache:clear` is the escape hatch, and it costs at most two queries on the next page
+load — one per key.
 
 It is safe to run against a queued export, and not by luck: `DatabaseStore::flush()` deletes the
 `cache` table only, while a `ShouldBeUnique` lock lives in `cache_locks`, and `cache:clear`
@@ -247,13 +252,13 @@ survives a badge flush. Reaching for `--locks` to unstick something is the move 
 it.
 
 **A static memo is not a cache, and the two are stacked on purpose.** `TransactionResource::$balance`
-and `ElectricityTariffResource::$currentRate` hold the figure for the rest of the request
-because Filament asks for a badge and its colour in two separate calls; `PanelCache` holds it
-across requests. Dropping the static puts a cache round-trip on the second call, dropping the
-cache puts the aggregate back on every page load. The static assumes a process that ends with
-the response — under Octane or any persistent worker it would outlive its request. It already
-outlives a *test*, which is why `PanelCacheTest` resets both in `setUp()`; without that a test
-reads what the previous test left behind and the cache layer is never exercised.
+holds the figure for the rest of the request because Filament asks for a badge and its colour in
+two separate calls; `PanelCache` holds it across requests. Dropping the static puts a cache
+round-trip on the second call, dropping the cache puts the aggregate back on every page load.
+The static assumes a process that ends with the response — under Octane or any persistent worker
+it would outlive its request. It already outlives a *test*, which is why `PanelCacheTest` resets
+it in `setUp()`; without that a test reads what the previous test left behind and the cache layer
+is never exercised.
 
 **Policies for vendor models are not auto-discovered.** Laravel maps `App\Models\X` to
 `App\Policies\XPolicy`. `Activity` lives in a vendor namespace, so `ActivityPolicy` is
@@ -283,14 +288,14 @@ properties; match the file you are editing.
 keep listing exactly those. The two-factor columns are absent on purpose: they are written by direct assignment, and a fillable secret is
 settable from any request that reaches a user form.
 
-**`booted()` is already taken on eight models.** Eloquent allows one `booted()` per class, so a
+**`booted()` is already taken on seven models.** Eloquent allows one `booted()` per class, so a
 second definition silently replaces the first rather than erroring — no warning, and the hook
 that vanishes is whichever one was there first. Add listeners inside the existing method.
 
 | Model | What its `booted()` does |
 |-------|--------------------------|
 | `User` | watches the two-factor column for change without recording its value |
-| `Transaction`, `MeterReading`, `ElectricityTariff`, `Sale`, `FreeItemRedemption` | stamp the author from the session |
+| `Transaction`, `MeterReading`, `Sale`, `FreeItemRedemption` | stamp the author from the session |
 | `VisitMonitoring`, `AuthenticationMonitoring` | write the `visit_deleted` / `sign_in_deleted` audit entries |
 
 Trait boot methods are exempt: `bootInteractsWithMedia()` runs *in addition to* `booted()`,
@@ -385,13 +390,13 @@ with the role names in `properties`. Since a role is what grants panel access, t
 privilege-escalation trail — if it stops working the log looks healthy while missing the most
 important events.
 
-**Eight models carry the trait**, each with its own log name and its own explicit allowlist:
+**Six models carry the trait**, each with its own log name and its own explicit allowlist:
 
 | Model | Log name | Feature |
 |-------|----------|---------|
 | `User` | `user` | Access control |
 | `Transaction` | `transaction` | Keuangan |
-| `Room`, `ElectricityTariff`, `MeterReading` | `room`, `tariff`, `meter_reading` | Listrik kost |
+| `MeterReading` | `meter_reading` | Listrik kost |
 | `Customer`, `Sale`, `FreeItemRedemption` | `customer`, `sale`, `free_item_redemption` | Oriflame |
 
 Five of them pair the trait with a separate listener, because the thing worth auditing is not a
@@ -401,14 +406,12 @@ column and `LogsActivity` cannot see it: roles on `User` (a pivot table), receip
 
 When adding the trait to another model, keep the same shape: name the log, list attributes
 explicitly, and add a test asserting nothing outside the allowlist reaches `attribute_changes`.
-`UserActivityLoggingTest`, `TransactionResourceTest` and
-`SaleResourceTest::test_nothing_outside_the_allowlist_is_logged` each have one to copy.
-
-**The Kost models are the gap.** `Room`, `ElectricityTariff` and `MeterReading` assert *that*
-their allowlisted columns are logged and never that unlisted ones are not, so widening one of
-those `logOnly()` calls — or adding a column that a future refactor sweeps into it — would not
-fail anything. None of the three holds a secret today, which is why it has gone unnoticed; the
-test to copy is three assertions long.
+`UserActivityLoggingTest`, `TransactionResourceTest`,
+`SaleResourceTest::test_nothing_outside_the_allowlist_is_logged` and
+`MeterReadingResourceTest::test_nothing_outside_the_allowlist_is_logged` each have one to copy.
+That last one closed what used to be a three-model gap in Kost: an allowlist is asserted
+everywhere by what it *does* record and almost nowhere by what it refuses, so widening a
+`logOnly()` call — or adding a column a refactor sweeps into it — fails nothing.
 
 The UI is `app/Filament/Resources/Activities/`. `canCreate()` and `canEdit()` return `false`,
 so Filament never registers create or edit routes — an editable audit entry is worse than a
@@ -419,7 +422,7 @@ joined.
 
 Log names in use: `user` (model changes including either sign-in identifier, role grants,
 two-factor changes), `transaction`
-(cash book rows and receipt deletions — see Keuangan), `room`, `tariff` and `meter_reading`
+(cash book rows and receipt deletions — see Keuangan), `meter_reading`
 (the electricity feature and its photo deletions — see Listrik kost), `sale`
 (orders and their attachment deletions), `free_item_redemption` (a free item collected, and its
 resi photograph removed — kept out of `sale` and `customer` because "when did somebody collect a
@@ -528,21 +531,16 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   `$livewire->data`.** `EditRecord::$data` is the public form state array, so an action can put
   values in front of the user and let the ordinary Simpan commit them — which keeps the model
   events, the validation and the audit entries on the normal path. Write values in the shape the
-  field *holds* — a `RupiahInput` holds a grouped string, not an integer. `RefreshRateAction` is
-  the worked example, writing `data['rate']`, and
-  `test_refreshing_the_rate_fills_the_form_without_saving` is what keeps it from quietly
-  becoming a direct write. It also *reads* from `$livewire->data`: the closing moment it picks a
-  tariff by is whatever the form currently holds, not what the row holds, so a correction that
-  moves the date and the rate together stays consistent. There is no `Repeater` left in this
-  project, but if one returns: its items live under `data.<field>.<uuid>.<name>`, keyed by uuid,
-  so the path cannot be written out in advance — iterate the array instead.
-- **A field hidden from the form is still reachable from `$livewire->data`**, and that is what
-  makes a hidden column correctable at all. `MeterReading::$rate` is hidden on both form screens
-  yet `->dehydratedWhenHidden()`, so an action can write it and the ordinary Simpan commits it.
-  The catch is that the user cannot see the field move: something else on screen has to be the
-  evidence. `RefreshRateAction` leans on the `Perhitungan` total, which is a `TextEntry` reading
-  `$get('rate')` and therefore re-renders with the new figure — and the confirmation names the
-  bill before and after rather than only the rate, because the rate alone is not checkable.
+  field *holds* — a `RupiahInput` holds a grouped string, not an integer, and a
+  `DateTimePicker` configured `->seconds(false)` holds `Y-m-d H:i`. **Nothing does this today**:
+  `RefreshRateAction` was the worked example and went with the tariff screen (see Listrik kost),
+  so the next one is written from this note rather than from a neighbour. Two things that were
+  learned the hard way there and are cheap to lose: pair it with a test asserting the row is
+  *unchanged* until Simpan, or it quietly becomes a direct write; and if the field being written
+  is hidden, something else on screen has to move as evidence — a `TextEntry` reading `$get()`
+  re-renders, a hidden input does not. There is no `Repeater` left in this project, but if one
+  returns: its items live under `data.<field>.<uuid>.<name>`, keyed by uuid, so the path cannot
+  be written out in advance — iterate the array instead.
 - **A grouped rupiah field is `App\Filament\Forms\Components\RupiahInput`.** It assembles the
   `->live(onBlur)` / `->formatStateUsing()` / `->dehydrateStateUsing()` trio that has to travel
   together — losing the last one stores `"1.500.000"` into an INTEGER column, which SQLite
@@ -566,8 +564,8 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   **More than one mount point is sufficient reason, not the only one.** An action carrying real
   logic — a built-out confirmation, a state diff, a notification — belongs in its own class from
   the first mount, so the page class stays a list of what is on the page.
-  `RefreshRateAction` is mounted once and is a class for that reason; a `getHeaderActions()`
-  holding sixty lines of rate arithmetic is where a page stops being readable.
+  `RefreshRateAction` used to be mounted once and to be a class for that reason alone; a
+  `getHeaderActions()` holding sixty lines of arithmetic is where a page stops being readable.
 - **A media component repeated per collection belongs in a private factory method** on the schema
   or table class, not typed out twice. `MeterReadingForm`, `MeterReadingsTable` and
   `MeterReadingInfolist` each build both of their photo components from one `photos()` helper;
@@ -603,13 +601,18 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   to tidy a form silently stops writing its column. Pair it with `->dehydratedWhenHidden()`
   whenever the value still has to reach the row, and assert the stored value in a test:
   the form shows no error, and the failure surfaces as a NOT NULL violation naming a field the
-  user cannot see. `MeterReadingForm`'s rate field is the worked example.
-- **A `$set()` onto a date picker has to match that picker's own precision.** A
-  `DateTimePicker` configured `->seconds(false)` carries state as `Y-m-d H:i`, so writing
-  `Y-m-d H:i:s` into it from an `afterStateUpdated()` puts a shape in the form state that the
-  field never produces on its own. It still displays and still saves, so nothing fails — but
-  `assertSchemaStateSet()` compares the raw string and every test written against the field's
-  natural output disagrees with it. `MeterReadingForm` formats its prefill to match.
+  user cannot see. **No field in this project is hidden today** — `MeterReadingForm`'s rate was
+  the worked example and became an ordinary visible field when the tariff screen supplying it
+  was removed (see Listrik kost), so the flag appears nowhere and the next hidden field is
+  written from this note alone.
+- **A value written into a date picker has to match that picker's own precision**, whether it
+  arrives from `->default()`, from `$set()` or from an `afterStateUpdated()`. A `DateTimePicker`
+  configured `->seconds(false)` carries state as `Y-m-d H:i`, so writing `Y-m-d H:i:s` puts a
+  shape in the form state that the field never produces on its own. It still displays and still
+  saves, so nothing fails — but `assertSchemaStateSet()` compares the raw string, and every test
+  written against the field's natural output disagrees with it. `MeterReadingForm` formats its
+  prefill to match: `->default()` there returns the previous reading's `end_read_at` through
+  `->format('Y-m-d H:i')` rather than handing the picker a Carbon instance.
 - **The same derived figure reaches a list and a detail screen by two different routes, so the
   arithmetic gets one home.** A total that walks a loaded relation is right on a view screen and
   is a query per row on a list; the list therefore asks the database for it with
@@ -635,9 +638,12 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   `->sortable(query: fn (Builder $q, string $direction) => $q->orderByRaw("… {$direction}"))`.
   `MeterReadingsTable` does this for both derived columns.
 - **Navigation groups are set per resource**, not in the panel provider: `$navigationGroup`
-  on each `Resource`, with `$navigationSort` ordering within the group. `Kost` and `Oriflame`
-  are the worked examples, and both order the screen that is worked in daily first and the ones
-  that are set up then consulted after it. A resource with no group sits above the grouped ones.
+  on each `Resource`, with `$navigationSort` ordering within the group. `Oriflame` is the worked
+  example, ordering the screen that is worked in daily first and the ones that are set up then
+  consulted after it. `Kost` is a group of one since its rooms and tariffs were folded into the
+  reading form, and it keeps the group anyway — a lone ungrouped resource sits above every
+  grouped one, which reads as more important rather than as unclassified. A resource with no
+  group sits above the grouped ones.
 - Before deploying run `php artisan filament:optimize` — caches component discovery and Blade
   icons. Without it every request pays a directory scan. Re-run `filament:optimize-clear` after
   editing the panel provider, or the cached component list masks your change.

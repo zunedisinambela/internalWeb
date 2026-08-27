@@ -5,9 +5,7 @@ namespace Tests\Feature;
 use App\Filament\Resources\MeterReadings\Pages\CreateMeterReading;
 use App\Filament\Resources\MeterReadings\Pages\EditMeterReading;
 use App\Filament\Resources\MeterReadings\Pages\ListMeterReadings;
-use App\Models\ElectricityTariff;
 use App\Models\MeterReading;
-use App\Models\Room;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -37,13 +35,12 @@ class MeterReadingResourceTest extends TestCase
 
     public function test_a_super_admin_can_open_the_list(): void
     {
-        $room = Room::factory()->create(['name' => 'Kamar B2']);
-        MeterReading::factory()->forRoom($room)->usage(120)->create();
+        MeterReading::factory()->usage(120)->create();
 
         $this->actingAs($this->superAdmin())
             ->get('/meter-readings')
             ->assertOk()
-            ->assertSee('Kamar B2');
+            ->assertSee('120 kWh');
     }
 
     public function test_a_read_only_role_cannot_reach_the_create_page(): void
@@ -76,38 +73,37 @@ class MeterReadingResourceTest extends TestCase
     }
 
     /**
-     * The single most important assertion in this file.
+     * The single most important assertion in this file, and the one that
+     * survived the tariff screen being removed.
      *
-     * The rate is copied onto the reading when it is recorded, never joined to
-     * from electricity_tariffs. Without that copy, entering a new tariff would
-     * silently recompute every bill already issued — no row changed, nothing in
-     * the activity log, and a tenant's July bill quietly becoming August's rate.
+     * The rate lives on the reading. A price entered on a later reading is a
+     * fact about that period and must not reach backwards — without a rate per
+     * row, raising the price in August would silently recompute July's bill,
+     * with no row changed and nothing in the activity log to notice.
      */
-    public function test_a_later_tariff_does_not_change_a_recorded_reading(): void
+    public function test_a_later_reading_at_a_new_rate_does_not_change_an_earlier_bill(): void
     {
-        ElectricityTariff::factory()->rate(1_500, '2026-07-01')->create();
-
-        $reading = MeterReading::factory()->usage(100, rate: 1_500)
+        $july = MeterReading::factory()->usage(100, rate: 1_500)
             ->create(['end_read_at' => '2026-07-20 09:00:00']);
 
-        $this->assertSame(150_000, $reading->total_amount);
+        $this->assertSame(150_000, $july->total_amount);
 
-        ElectricityTariff::factory()->rate(2_000, '2026-08-01')->create();
+        MeterReading::factory()->usage(100, rate: 2_000)
+            ->create(['end_read_at' => '2026-08-20 09:00:00']);
 
-        $this->assertSame(1_500, $reading->fresh()->rate);
-        $this->assertSame(150_000, $reading->fresh()->total_amount);
-        // The tariff screen has moved on; the recorded bill has not.
-        $this->assertSame(2_000, ElectricityTariff::currentRate());
+        $this->assertSame(1_500, $july->fresh()->rate);
+        $this->assertSame(150_000, $july->fresh()->total_amount);
     }
 
     /**
-     * The form's half of that: a new reading arrives with the rate in force
-     * already filled in, so the copy happens without anyone having to remember.
+     * The form's half of that: the rate carries forward, so a tariff that has
+     * not moved is one fewer thing to type each month — and one that has moved
+     * is a field already on screen waiting to be corrected.
      */
-    public function test_the_form_prefills_the_rate_in_force(): void
+    public function test_the_form_prefills_the_rate_from_the_previous_reading(): void
     {
-        Carbon::setTestNow('2026-08-14 15:00:00');
-        ElectricityTariff::factory()->rate(1_650, '2026-08-01')->create();
+        MeterReading::factory()->usage(100, rate: 1_650)
+            ->create(['end_read_at' => '2026-07-20 09:00:00']);
 
         Livewire::actingAs($this->superAdmin())
             ->test(CreateMeterReading::class)
@@ -117,29 +113,79 @@ class MeterReadingResourceTest extends TestCase
     }
 
     /**
-     * The rate is not a decision taken at the meter, so it is not asked for
-     * there — it is set once on the tariff screen and copied.
-     *
-     * This is the assertion that makes hiding the field safe. Filament does not
-     * dehydrate a hidden component unless told to, so without
-     * ->dehydratedWhenHidden() the column would receive nothing, and the snapshot
-     * the whole feature rests on would be gone with no error anywhere.
+     * It carries forward from the *latest* reading, not the first one recorded.
+     * Ordering on end_read_at is what places a period on the timeline, so a
+     * correction entered out of order still leaves the newest price as the one
+     * offered next.
      */
-    public function test_the_rate_is_copied_even_though_the_field_is_hidden(): void
+    public function test_the_prefilled_rate_comes_from_the_latest_period_not_the_last_row_written(): void
     {
-        Carbon::setTestNow('2026-08-14 15:00:00');
-        ElectricityTariff::factory()->rate(1_650, '2026-08-01')->create();
+        MeterReading::factory()->usage(100, rate: 2_000)
+            ->create(['end_read_at' => '2026-08-20 09:00:00']);
 
-        $room = Room::factory()->create();
+        // Written second, but covers an earlier period.
+        MeterReading::factory()->usage(100, rate: 1_500)
+            ->create(['end_read_at' => '2026-07-20 09:00:00']);
 
         Livewire::actingAs($this->superAdmin())
             ->test(CreateMeterReading::class)
-            ->assertSchemaComponentHidden('rate', 'form')
-            // Deliberately not filled — that is the point.
+            ->assertSchemaStateSet(['rate' => '2.000'], schema: 'form');
+    }
+
+    /**
+     * The rate is asked for on the form now, rather than copied from a tariff
+     * screen that no longer exists. That makes it an ordinary visible field —
+     * and this is what stops it drifting back into being hidden, which it was
+     * for as long as something else supplied it.
+     */
+    public function test_the_rate_field_is_on_screen_and_required(): void
+    {
+        Carbon::setTestNow('2026-08-14 15:00:00');
+
+        Livewire::actingAs($this->superAdmin())
+            ->test(CreateMeterReading::class)
+            ->assertSchemaComponentVisible('rate', 'form')
             ->fillForm([
-                'room_id' => $room->getKey(),
                 'start_kwh' => 1_000,
                 'end_kwh' => 1_100,
+                'rate' => null,
+                'start_read_at' => '2026-07-14 09:00',
+                'end_read_at' => '2026-08-14 09:00',
+            ])
+            ->call('create')
+            ->assertHasFormErrors(['rate']);
+
+        $this->assertSame(0, MeterReading::query()->count());
+    }
+
+    /**
+     * The very first reading has nothing to carry a rate forward from, and the
+     * field opens empty rather than at a made-up number. `rate` is NOT NULL and
+     * required, so the form asks — a default of 0 or 1.500 would put a figure
+     * nobody chose straight onto a bill.
+     */
+    public function test_the_first_reading_opens_with_an_empty_rate(): void
+    {
+        Livewire::actingAs($this->superAdmin())
+            ->test(CreateMeterReading::class)
+            ->assertSchemaStateSet(['rate' => null], schema: 'form');
+    }
+
+    /**
+     * The grouped field's round trip: typed with separators, stored bare.
+     *
+     * Losing ->dehydrateStateUsing() here would write "1.500" into an INTEGER
+     * column, which SQLite casts to 1 with no error at all — a bill of Rp 100
+     * that looks like a data-entry mistake rather than a missing call.
+     */
+    public function test_a_grouped_rate_is_stored_as_a_whole_integer(): void
+    {
+        Livewire::actingAs($this->superAdmin())
+            ->test(CreateMeterReading::class)
+            ->fillForm([
+                'start_kwh' => 1_000,
+                'end_kwh' => 1_100,
+                'rate' => '1.650',
                 'start_read_at' => '2026-07-14 09:00',
                 'end_read_at' => '2026-08-14 09:00',
             ])
@@ -153,228 +199,53 @@ class MeterReadingResourceTest extends TestCase
     }
 
     /**
-     * The escape hatch stays reachable. `rate` is NOT NULL and there is nothing
-     * to copy, so hiding the field here would refuse the save with a message
-     * naming a field nobody can see.
-     */
-    public function test_the_rate_field_appears_when_there_is_no_tariff_to_copy(): void
-    {
-        Livewire::actingAs($this->superAdmin())
-            ->test(CreateMeterReading::class)
-            ->assertSchemaComponentVisible('rate', 'form');
-    }
-
-    /**
-     * Hidden on the edit screen too. The cost is that a rate typed wrong is no
-     * longer correctable from the panel; that trade was made knowingly, and this
-     * test is what stops the field drifting back onto the screen unnoticed.
-     */
-    public function test_the_rate_field_stays_hidden_when_editing_a_recorded_reading(): void
-    {
-        ElectricityTariff::factory()->rate(1_650, '2026-08-01')->create();
-
-        $reading = MeterReading::factory()->usage(100)->create();
-
-        Livewire::actingAs($this->superAdmin())
-            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
-            ->assertSchemaComponentHidden('rate', 'form');
-    }
-
-    /**
-     * The snapshot has to survive an edit, and hiding the field is where that
-     * could quietly break.
+     * The snapshot has to survive an edit.
      *
-     * The reading below stores 1.500 while the tariff screen has since moved to
-     * 2.000. Saving an unrelated field must write the stored rate back unchanged
-     * — not re-copy the rate in force, which would reprice a bill already issued
-     * while looking like an ordinary edit. ->default() is what fills the field on
-     * create; on edit the stored value is what loads, and this asserts the round
-     * trip through formatStateUsing/dehydrateStateUsing does not lose it.
+     * The reading below was recorded at 1.500 and a later period has since been
+     * recorded at 2.000. Saving an unrelated field must write the stored rate
+     * back unchanged — a form that re-derived it from "the current price" would
+     * reprice an issued bill while looking like an ordinary edit.
      */
-    public function test_editing_a_reading_does_not_recopy_the_current_tariff(): void
+    public function test_editing_a_reading_does_not_pick_up_a_newer_rate(): void
     {
-        ElectricityTariff::factory()->rate(1_500, '2026-07-01')->create();
-
-        $reading = MeterReading::factory()->usage(100, rate: 1_500)
+        $july = MeterReading::factory()->usage(100, rate: 1_500)
             ->create(['end_read_at' => '2026-07-20 09:00:00']);
 
-        ElectricityTariff::factory()->rate(2_000, '2026-08-01')->create();
+        MeterReading::factory()->usage(100, rate: 2_000)
+            ->create(['end_read_at' => '2026-08-20 09:00:00']);
 
         Livewire::actingAs($this->superAdmin())
-            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
+            ->test(EditMeterReading::class, ['record' => $july->getKey()])
             ->fillForm(['note' => 'Angka sulit dibaca'])
             ->call('save')
             ->assertHasNoFormErrors();
 
-        $reading->refresh();
+        $july->refresh();
 
-        $this->assertSame(1_500, $reading->rate);
-        $this->assertSame(150_000, $reading->total_amount);
-        $this->assertSame('Angka sulit dibaca', $reading->note);
+        $this->assertSame(1_500, $july->rate);
+        $this->assertSame(150_000, $july->total_amount);
+        $this->assertSame('Angka sulit dibaca', $july->note);
     }
 
     /**
-     * The escape hatch from the snapshot, and the assertion that it stays one:
-     * the action fills the open form and writes nothing. Closing the page without
-     * saving has to leave the bill exactly as it was.
-     *
-     * The rate field is hidden here, so the form state is the only place the new
-     * figure is visible at all — which is why it is what gets asserted.
+     * A rate typed wrong is corrected on the field itself now. There used to be
+     * a RefreshRateAction for this, because the figure came from a screen the
+     * user could not reach from here; with the rate on the form, the correction
+     * is the ordinary save — model events, validation and audit entry included.
      */
-    public function test_refreshing_the_rate_fills_the_form_without_saving(): void
+    public function test_a_rate_typed_wrong_is_corrected_on_the_form(): void
     {
-        ElectricityTariff::factory()->rate(1_500, '2026-07-01')->create();
-
-        // Recorded at a rate that was simply wrong — the case the snapshot
-        // deliberately leaves unserved, and this button exists for.
-        $reading = MeterReading::factory()->usage(100, rate: 1_200)
-            ->create(['end_read_at' => '2026-07-20 09:00:00']);
+        $reading = MeterReading::factory()->usage(100, rate: 1_200)->create();
 
         Livewire::actingAs($this->superAdmin())
             ->test(EditMeterReading::class, ['record' => $reading->getKey()])
-            ->callAction('refreshRate')
-            // Grouped, because that is the shape the field holds.
-            ->assertSchemaStateSet(['rate' => '1.500'], schema: 'form');
-
-        // The row still holds what it was recorded at.
-        $this->assertSame(1_200, $reading->fresh()->rate);
-        $this->assertSame(120_000, $reading->fresh()->total_amount);
-    }
-
-    /**
-     * The other half: Simpan is what commits it, through the ordinary save path
-     * — so the correction lands in `meter_reading` the same way a rate fixed from
-     * tinker would, rather than moving a bill with nothing to show for it.
-     */
-    public function test_saving_after_a_rate_refresh_commits_it_and_audits_it(): void
-    {
-        ElectricityTariff::factory()->rate(1_500, '2026-07-01')->create();
-
-        $reading = MeterReading::factory()->usage(100, rate: 1_200)
-            ->create(['end_read_at' => '2026-07-20 09:00:00']);
-
-        Activity::query()->delete();
-
-        Livewire::actingAs($this->superAdmin())
-            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
-            ->callAction('refreshRate')
+            ->assertSchemaStateSet(['rate' => '1.200'], schema: 'form')
+            ->fillForm(['rate' => '1.500'])
             ->call('save')
             ->assertHasNoFormErrors();
 
-        $reading->refresh();
-
-        $this->assertSame(1_500, $reading->rate);
-        $this->assertSame(150_000, $reading->total_amount);
-
-        $entry = Activity::query()->where('log_name', 'meter_reading')->latest('id')->first();
-
-        $this->assertNotNull($entry, 'A correction made this way has to be audited like any other.');
-        $this->assertSame(1_200, $entry->attribute_changes['old']['rate']);
-        $this->assertSame(1_500, $entry->attribute_changes['attributes']['rate']);
-    }
-
-    /**
-     * The one place this deliberately differs from the sales action it copies.
-     *
-     * Product prices are not versioned, so "the current price" is the only answer
-     * there. Tariffs are, so a July reading corrected in August has two candidate
-     * rates — and the newest one is the wrong one. Taking August's rate onto a
-     * July bill is exactly the repricing the snapshot exists to prevent, arriving
-     * through a button instead of through a join.
-     */
-    public function test_the_rate_refresh_takes_the_tariff_in_force_when_the_period_closed(): void
-    {
-        Carbon::setTestNow('2026-08-14 15:00:00');
-
-        ElectricityTariff::factory()->rate(1_500, '2026-07-01')->create();
-        ElectricityTariff::factory()->rate(2_000, '2026-08-01')->create();
-
-        $reading = MeterReading::factory()->usage(100, rate: 1_200)
-            ->create(['end_read_at' => '2026-07-20 09:00:00']);
-
-        Livewire::actingAs($this->superAdmin())
-            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
-            ->callAction('refreshRate')
-            ->call('save')
-            ->assertHasNoFormErrors();
-
-        // July's rate, not today's.
         $this->assertSame(1_500, $reading->fresh()->rate);
-        $this->assertSame(2_000, ElectricityTariff::currentRate());
-    }
-
-    /**
-     * The button answers "is this bill on the right tariff?" by being absent. A
-     * modal that opens only to say nothing would change is a worse answer than no
-     * button — and here it matters more than on a sale, because the rate field is
-     * hidden and the modal is the only place the figure is ever shown.
-     */
-    public function test_the_rate_refresh_button_is_hidden_when_the_rate_already_matches(): void
-    {
-        ElectricityTariff::factory()->rate(1_500, '2026-07-01')->create();
-
-        $reading = MeterReading::factory()->usage(100, rate: 1_500)
-            ->create(['end_read_at' => '2026-07-20 09:00:00']);
-
-        $admin = $this->superAdmin();
-
-        Livewire::actingAs($admin)
-            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
-            ->assertActionHidden('refreshRate');
-
-        $reading->update(['rate' => 1_200]);
-
-        Livewire::actingAs($admin)
-            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
-            ->assertActionVisible('refreshRate');
-    }
-
-    /**
-     * A reading closed before any tariff was ever set has nothing to copy from.
-     * Falling back to the earliest or the newest rate would put a figure onto a
-     * bill that no tariff row can account for.
-     */
-    public function test_the_rate_refresh_button_is_hidden_when_no_tariff_had_taken_effect_yet(): void
-    {
-        ElectricityTariff::factory()->rate(1_500, '2026-08-01')->create();
-
-        $reading = MeterReading::factory()->usage(100, rate: 1_200)
-            ->create(['end_read_at' => '2026-07-20 09:00:00']);
-
-        Livewire::actingAs($this->superAdmin())
-            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
-            ->assertActionHidden('refreshRate');
-    }
-
-    /**
-     * The confirmation is what makes this a correction rather than a silent
-     * rewrite. It has to name both rates and the bill they produce, because the
-     * rate field is hidden — the total is the only thing the user can check.
-     *
-     * A tariff note is typed by a user and the modal body is rendered as HTML, so
-     * it is escaped.
-     */
-    public function test_the_rate_refresh_confirmation_names_both_rates_and_escapes_the_tariff_note(): void
-    {
-        ElectricityTariff::factory()->rate(1_500, '2026-07-01')
-            ->create(['note' => 'Naik & <b>disesuaikan</b> PLN']);
-
-        $reading = MeterReading::factory()->usage(100, rate: 1_200)
-            ->create(['end_read_at' => '2026-07-20 09:00:00']);
-
-        $description = (string) Livewire::actingAs($this->superAdmin())
-            ->test(EditMeterReading::class, ['record' => $reading->getKey()])
-            ->instance()
-            ->getAction('refreshRate')
-            ->getModalDescription();
-
-        $this->assertStringContainsString('Rp 1.200', $description);
-        $this->assertStringContainsString('Rp 1.500', $description);
-        // The bill before and after, which is what the correction actually moves.
-        $this->assertStringContainsString('Rp 120.000', $description);
-        $this->assertStringContainsString('Rp 150.000', $description);
-        $this->assertStringContainsString('Naik &amp; &lt;b&gt;disesuaikan&lt;/b&gt; PLN', $description);
-        $this->assertStringNotContainsString('<b>disesuaikan</b>', $description);
+        $this->assertSame(150_000, $reading->fresh()->total_amount);
     }
 
     /**
@@ -384,13 +255,11 @@ class MeterReadingResourceTest extends TestCase
      */
     public function test_the_opening_figure_is_prefilled_from_the_previous_reading(): void
     {
-        $room = Room::factory()->create();
-        MeterReading::factory()->forRoom($room)->usage(200, start: 3_000)
+        MeterReading::factory()->usage(200, start: 3_000)
             ->create(['end_read_at' => '2026-07-01 09:00:00']);
 
         Livewire::actingAs($this->superAdmin())
             ->test(CreateMeterReading::class)
-            ->fillForm(['room_id' => $room->getKey()])
             ->assertSchemaStateSet(['start_kwh' => 3_200], schema: 'form');
     }
 
@@ -401,47 +270,31 @@ class MeterReadingResourceTest extends TestCase
      */
     public function test_the_opening_moment_is_prefilled_from_the_previous_reading(): void
     {
-        $room = Room::factory()->create();
-        MeterReading::factory()->forRoom($room)->usage(200, start: 3_000)
+        MeterReading::factory()->usage(200, start: 3_000)
             ->create(['end_read_at' => '2026-07-01 09:00:00']);
 
         Livewire::actingAs($this->superAdmin())
             ->test(CreateMeterReading::class)
-            ->fillForm(['room_id' => $room->getKey()])
             // Without seconds — the shape the ->seconds(false) picker carries.
             ->assertSchemaStateSet(['start_read_at' => '2026-07-01 09:00'], schema: 'form');
     }
 
     /**
-     * A room being read for the first time keeps the default rather than having
-     * it blanked. Overwriting a required field with null on the one path that has
-     * nothing to copy from would read as the form breaking, not as an empty
-     * history.
+     * A meter nobody has recorded yet keeps the fallbacks rather than opening
+     * blank. A required field left empty on a form that just filled two others
+     * in reads as the form breaking, not as an empty history.
      */
-    public function test_a_room_with_no_history_keeps_the_default_opening_moment(): void
+    public function test_a_meter_with_no_history_opens_at_zero_and_at_now(): void
     {
         Carbon::setTestNow('2026-08-14 15:12:00');
 
-        $room = Room::factory()->create();
-
         Livewire::actingAs($this->superAdmin())
             ->test(CreateMeterReading::class)
-            ->fillForm(['room_id' => $room->getKey()])
-            ->assertSchemaStateSet(['start_read_at' => '2026-08-14 15:12'], schema: 'form');
-    }
-
-    /**
-     * A meter nobody has recorded yet starts at zero rather than blank — a blank
-     * required field on a form that just filled two others in reads as a bug.
-     */
-    public function test_a_room_with_no_history_opens_at_zero(): void
-    {
-        $room = Room::factory()->create();
-
-        Livewire::actingAs($this->superAdmin())
-            ->test(CreateMeterReading::class)
-            ->fillForm(['room_id' => $room->getKey()])
-            ->assertSchemaStateSet(['start_kwh' => 0], schema: 'form');
+            ->assertSchemaStateSet([
+                'start_kwh' => 0,
+                'start_read_at' => '2026-08-14 15:12',
+                'end_read_at' => '2026-08-14 15:12',
+            ], schema: 'form');
     }
 
     /**
@@ -452,12 +305,9 @@ class MeterReadingResourceTest extends TestCase
      */
     public function test_a_closing_figure_below_the_opening_one_is_refused(): void
     {
-        $room = Room::factory()->create();
-
         Livewire::actingAs($this->superAdmin())
             ->test(CreateMeterReading::class)
             ->fillForm([
-                'room_id' => $room->getKey(),
                 'start_kwh' => 5_000,
                 'end_kwh' => 4_900,
                 'rate' => '1.500',
@@ -472,12 +322,9 @@ class MeterReadingResourceTest extends TestCase
 
     public function test_an_unchanged_meter_records_a_zero_bill(): void
     {
-        $room = Room::factory()->create();
-
         Livewire::actingAs($this->superAdmin())
             ->test(CreateMeterReading::class)
             ->fillForm([
-                'room_id' => $room->getKey(),
                 'start_kwh' => 5_000,
                 'end_kwh' => 5_000,
                 'rate' => '1.500',
@@ -500,12 +347,10 @@ class MeterReadingResourceTest extends TestCase
     public function test_the_author_is_stamped_on_create(): void
     {
         $admin = $this->superAdmin();
-        $room = Room::factory()->create();
 
         Livewire::actingAs($admin)
             ->test(CreateMeterReading::class)
             ->fillForm([
-                'room_id' => $room->getKey(),
                 'start_kwh' => 1_000,
                 'end_kwh' => 1_100,
                 'rate' => '1.500',
@@ -519,37 +364,16 @@ class MeterReadingResourceTest extends TestCase
     }
 
     /**
-     * now() is already WIB — APP_TIMEZONE is Asia/Jakarta and timestamps are
-     * stored in local time, so nothing is converted anywhere in this feature.
-     */
-    public function test_both_reading_times_default_to_now(): void
-    {
-        Carbon::setTestNow('2026-08-14 15:12:00');
-
-        Livewire::actingAs($this->superAdmin())
-            ->test(CreateMeterReading::class)
-            // Without seconds: both pickers are configured ->seconds(false), so
-            // that is the shape the form state carries.
-            ->assertSchemaStateSet([
-                'start_read_at' => '2026-08-14 15:12',
-                'end_read_at' => '2026-08-14 15:12',
-            ], schema: 'form');
-    }
-
-    /**
      * A period that closes before it opens is a typo, and an expensive one: it is
      * end_read_at that dates the row, so such a reading would sort into the wrong
-     * place forever and previousFor() would offer it as the predecessor of
-     * readings taken before it.
+     * place forever and previous() would offer it as the predecessor of readings
+     * taken before it.
      */
     public function test_a_closing_moment_before_the_opening_one_is_refused(): void
     {
-        $room = Room::factory()->create();
-
         Livewire::actingAs($this->superAdmin())
             ->test(CreateMeterReading::class)
             ->fillForm([
-                'room_id' => $room->getKey(),
                 'start_kwh' => 1_000,
                 'end_kwh' => 1_100,
                 'rate' => '1.500',
@@ -563,18 +387,15 @@ class MeterReadingResourceTest extends TestCase
     }
 
     /**
-     * Both figures read in one visit is a real case — a room let mid-month, a
-     * meter replaced — so the two moments being equal is accepted where the
-     * reverse is not.
+     * Both figures read in one visit is a real case — a meter replaced, a room
+     * taken over mid-month — so the two moments being equal is accepted where
+     * the reverse is not.
      */
     public function test_both_figures_may_be_read_at_the_same_moment(): void
     {
-        $room = Room::factory()->create();
-
         Livewire::actingAs($this->superAdmin())
             ->test(CreateMeterReading::class)
             ->fillForm([
-                'room_id' => $room->getKey(),
                 'start_kwh' => 0,
                 'end_kwh' => 0,
                 'rate' => '1.500',
@@ -588,22 +409,16 @@ class MeterReadingResourceTest extends TestCase
     }
 
     /**
-     * The create button is hidden until a room exists. room_id is required and
-     * has no free-text fallback, so the form would otherwise open onto an empty
-     * select and refuse to save with a message naming the field rather than the
-     * missing room.
+     * Nothing has to be set up before the first reading any more.
+     *
+     * The button used to be hidden until a room existed, because room_id was
+     * required and had no free-text fallback. With the room gone there is no
+     * such precondition left, and a create button that hides itself for a reason
+     * nobody can see is indistinguishable from a missing permission.
      */
-    public function test_the_create_button_appears_only_once_a_room_exists(): void
+    public function test_the_create_button_is_available_on_an_empty_log(): void
     {
-        $admin = $this->superAdmin();
-
-        Livewire::actingAs($admin)
-            ->test(ListMeterReadings::class)
-            ->assertActionHidden(TestAction::make('create'));
-
-        Room::factory()->create();
-
-        Livewire::actingAs($admin)
+        Livewire::actingAs($this->superAdmin())
             ->test(ListMeterReadings::class)
             ->assertActionVisible(TestAction::make('create'));
     }
@@ -689,8 +504,7 @@ class MeterReadingResourceTest extends TestCase
     {
         Storage::fake('local');
 
-        $room = Room::factory()->create(['name' => 'Kamar C1']);
-        $reading = MeterReading::factory()->forRoom($room)->usage(90)->create();
+        $reading = MeterReading::factory()->usage(90, rate: 1_500)->create();
         // Both, so a private-URL flag missing from either end's component is
         // caught here rather than by eye on a broken image.
         $reading->addMedia(UploadedFile::fake()->image('awal.jpg'))
@@ -700,9 +514,14 @@ class MeterReadingResourceTest extends TestCase
 
         $admin = $this->superAdmin();
 
-        $this->actingAs($admin)->get('/meter-readings')->assertOk()->assertSee('Kamar C1');
+        $this->actingAs($admin)->get('/meter-readings')->assertOk()->assertSee('90 kWh');
         $this->actingAs($admin)->get('/meter-readings/create')->assertOk();
-        $this->actingAs($admin)->get('/meter-readings/'.$reading->getKey())->assertOk();
+        // The view screen prints the rate beside the total now, which it did not
+        // while a separate tariff screen existed to confuse it with.
+        $this->actingAs($admin)->get('/meter-readings/'.$reading->getKey())
+            ->assertOk()
+            ->assertSee('Rp 1.500 /kWh')
+            ->assertSee('Rp 135.000');
         $this->actingAs($admin)->get('/meter-readings/'.$reading->getKey().'/edit')->assertOk();
     }
 
@@ -766,8 +585,7 @@ class MeterReadingResourceTest extends TestCase
      */
     public function test_bulk_deleting_readings_is_audited_per_row(): void
     {
-        $room = Room::factory()->create();
-        $readings = MeterReading::factory()->forRoom($room)->count(2)->create();
+        $readings = MeterReading::factory()->count(2)->create();
 
         Livewire::actingAs($this->superAdmin())
             ->test(ListMeterReadings::class)
@@ -782,9 +600,9 @@ class MeterReadingResourceTest extends TestCase
     }
 
     /**
-     * The rate is on the audit allowlist deliberately: it is the one column here
-     * whose value is copied from somewhere else, so a row whose rate no longer
-     * matches any tariff is only explicable from the log.
+     * The rate is on the audit allowlist deliberately: it is the figure every
+     * bill is computed from, and the one a correction is most likely to touch
+     * quietly.
      */
     public function test_changing_the_rate_on_a_reading_is_audited(): void
     {
@@ -799,5 +617,30 @@ class MeterReadingResourceTest extends TestCase
 
         $this->assertSame(1_500, $entry->attribute_changes['old']['rate']);
         $this->assertSame(1_650, $entry->attribute_changes['attributes']['rate']);
+    }
+
+    /**
+     * The other half of an allowlist, and the half that is usually missing.
+     *
+     * logOnly() is asserted everywhere by what it *does* record; nothing asserts
+     * what it refuses. So widening the list — or a refactor that sweeps a new
+     * column into it — fails nothing. `user_id` is the column to test against:
+     * it is fillable, it is written on every row, and it is deliberately absent
+     * from the allowlist because who recorded a reading is already the causer.
+     */
+    public function test_nothing_outside_the_allowlist_is_logged(): void
+    {
+        $reading = MeterReading::factory()->usage(100, rate: 1_500)->create();
+        $other = $this->superAdmin();
+
+        $reading->update(['user_id' => $other->getKey(), 'rate' => 1_650]);
+
+        $entry = Activity::query()
+            ->where('log_name', 'meter_reading')
+            ->where('event', 'updated')
+            ->sole();
+
+        $this->assertSame(['rate'], array_keys($entry->attribute_changes['attributes']));
+        $this->assertArrayNotHasKey('user_id', $entry->attribute_changes['attributes']);
     }
 }

@@ -35,8 +35,9 @@ class MeterReadingResource extends Resource
 
     protected static ?string $pluralModelLabel = 'pencatatan meteran';
 
-    // First in the group: this is the screen that is worked in every month,
-    // while rooms and tariffs are set up once and then consulted.
+    // The only screen in the group. Rooms and tariffs used to sit beneath it;
+    // both were folded into this one form, so the sort is now a placeholder for
+    // wherever a second Kost screen would go.
     protected static ?int $navigationSort = 20;
 
     public static function form(Schema $schema): Schema
@@ -55,13 +56,13 @@ class MeterReadingResource extends Resource
     }
 
     /**
-     * Both relations are rendered on every row — the room in a column with its
-     * occupant underneath, the photographs in a stacked image column — so they
-     * are loaded once per page instead of once per row.
+     * Both relations are rendered on every row — the author in a toggleable
+     * column, the photographs in a stacked image column — so they are loaded
+     * once per page instead of once per row.
      */
     public static function getEloquentQuery(): Builder
     {
-        return parent::getEloquentQuery()->with(['room', 'user', 'media']);
+        return parent::getEloquentQuery()->with(['user', 'media']);
     }
 
     public static function getPages(): array

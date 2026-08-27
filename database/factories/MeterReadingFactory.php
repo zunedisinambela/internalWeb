@@ -3,7 +3,6 @@
 namespace Database\Factories;
 
 use App\Models\MeterReading;
-use App\Models\Room;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 /**
@@ -19,7 +18,6 @@ class MeterReadingFactory extends Factory
         $openedAt = fake()->dateTimeBetween('-6 months', '-1 month');
 
         return [
-            'room_id' => Room::factory(),
             'start_kwh' => $start,
             'end_kwh' => $start + fake()->numberBetween(10, 200),
             'rate' => 1_500,
@@ -71,10 +69,5 @@ class MeterReadingFactory extends Factory
             'end_kwh' => $start + $kwh,
             'rate' => $rate,
         ]);
-    }
-
-    public function forRoom(Room $room): static
-    {
-        return $this->state(fn (): array => ['room_id' => $room->getKey()]);
     }
 }

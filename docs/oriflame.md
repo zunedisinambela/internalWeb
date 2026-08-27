@@ -39,8 +39,8 @@ so `total_cost` and `profit` read exactly as they did before the column existed.
 reading was available and was rejected: making them per-unit prices would silently reinterpret
 every row already recorded, since a stored `190.000` would start meaning `190.000 × quantity`
 with nothing on the row saying which reading was intended. That is the same class of change the
-tariff snapshot under Listrik kost exists to prevent, arriving through a new column instead of
-through a join. `test_the_quantity_does_not_change_the_money` records two orders with identical
+rate-on-the-reading rule under Listrik kost exists to prevent, arriving through a new column
+instead of through a join. `test_the_quantity_does_not_change_the_money` records two orders with identical
 figures and item counts of 1 and 20 and asserts they cost and earn the same; without it the
 feature passes every other test under either reading.
 
@@ -277,7 +277,7 @@ the content is absent from the rendered list rather than calling `assertTableCol
 which asserts `isHidden()` and would be testing the opposite thing.
 
 **Customers are retired, not deleted.** `sales.customer_id` is `restrictOnDelete`, so
-`is_active` is the exit. The rule is enforced twice on purpose, exactly as it is for rooms:
+`is_active` is the exit. The rule is enforced twice on purpose:
 `canDelete()` on the resource turns the refusal into a missing button rather than a
 `QueryException`, and the foreign key covers tinker and anything else that never asks the
 resource. An inactive customer stays *selectable* on the form while marked `(tidak aktif)` — a
@@ -297,9 +297,11 @@ lines were machinery for a question nobody was asking. Three things follow.
   on another row. There is no catalogue table left to join to, so every figure on a sale was
   typed onto that sale and nothing outside it can move one. That is also why there is no
   refresh-prices button: correcting a figure is editing the field.
-  `RefreshRateAction` under Listrik kost is now the only action of that shape in the project,
-  and the four properties that make it a correction rather than an automatic recalculation are
-  documented there.
+  Listrik kost reached the same conclusion from the other direction: its `RefreshRateAction`
+  existed only because the rate came from a table the reading joined nothing to, and it was
+  deleted along with that table. No action of that shape is left in the project — which means
+  the next copied figure has no worked example, and Listrik kost is where the properties one
+  needs are written down.
 - **Per-product history is genuinely lost.** "What sells best" and "what did this product cost
   in July" are no longer answerable, and `activity_log` does not cover it either — there is
   nothing left recording which products an order contained. Getting it back means bringing the

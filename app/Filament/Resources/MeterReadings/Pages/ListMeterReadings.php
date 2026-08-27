@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\MeterReadings\Pages;
 
 use App\Filament\Resources\MeterReadings\MeterReadingResource;
-use App\Models\Room;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 
@@ -14,13 +13,12 @@ class ListMeterReadings extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            // No longer gated on anything. It used to be hidden until a room
+            // existed, because room_id was required and had no free-text
+            // fallback; with the room gone, a first reading needs nothing set up
+            // beforehand.
             CreateAction::make()
-                ->label('Catat meteran')
-                // Hidden until at least one room exists. room_id is required and
-                // has no free-text fallback, so the form would open onto a select
-                // with nothing in it and refuse to save with a message that names
-                // the field rather than the missing room.
-                ->visible(fn (): bool => Room::query()->exists()),
+                ->label('Catat meteran'),
         ];
     }
 }

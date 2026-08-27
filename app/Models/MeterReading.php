@@ -15,8 +15,16 @@ use Spatie\MediaLibrary\InteractsWithMedia;
 use Spatie\MediaLibrary\MediaCollections\Models\Media;
 
 /**
- * One reading of one room's electricity meter: the figure it started at, the
- * figure it ended at, and photographs of the dial behind both.
+ * One reading of the electricity meter: the figure it started at, the figure it
+ * ended at, photographs of the dial behind both, and the rate it is billed at.
+ *
+ * There is one meter. The feature used to file every reading under a Room and
+ * copy its rate out of a versioned electricity_tariffs table, which is the shape
+ * a landlord billing several tenants needs; it is now shaped for the tenant
+ * recording their own meter, so a reading stands on its own and carries its own
+ * rate. What survived that change is the part that mattered — `rate` is still a
+ * figure on this row, so a price entered today cannot reach backwards into a
+ * period already read off the dial.
  *
  * The second model in this project to use medialibrary, and it follows the
  * decision Transaction settled — the private `local` disk. A photograph of a
@@ -56,7 +64,6 @@ class MeterReading extends Model implements HasMedia
     public const THUMBNAIL = 'thumb';
 
     protected $fillable = [
-        'room_id',
         'start_kwh',
         'start_read_at',
         'end_kwh',
@@ -89,24 +96,19 @@ class MeterReading extends Model implements HasMedia
         });
     }
 
-    public function room(): BelongsTo
-    {
-        return $this->belongsTo(Room::class);
-    }
-
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
     }
 
     /**
-     * The reading a new one continues from: the latest on that meter, optionally
-     * before a given moment and ignoring one row.
+     * The reading a new one continues from: the latest one, optionally before a
+     * given moment and ignoring one row.
      *
      * `id` is the tiebreak, for the same reason CashBook orders by it — two
      * readings sharing a timestamp would otherwise come back in whatever order
-     * the engine felt like, and this value becomes the opening figure of the
-     * next reading.
+     * the engine felt like, and this value becomes the opening figure and the
+     * default rate of the next reading.
      *
      * `$before` and `$excludingId` are both there for the edit screen: without
      * them, reopening a reading offers that same row as its own predecessor,
@@ -119,10 +121,9 @@ class MeterReading extends Model implements HasMedia
      * being circular — `start_read_at` is what this lookup fills in, so it
      * cannot also be what scopes the lookup.
      */
-    public static function previousFor(int $roomId, ?\DateTimeInterface $before = null, ?int $excludingId = null): ?self
+    public static function previous(?\DateTimeInterface $before = null, ?int $excludingId = null): ?self
     {
         return static::query()
-            ->where('room_id', $roomId)
             ->when($before, fn ($query) => $query->where('end_read_at', '<', $before))
             ->when($excludingId, fn ($query) => $query->whereKeyNot($excludingId))
             ->orderByDesc('end_read_at')
@@ -148,8 +149,10 @@ class MeterReading extends Model implements HasMedia
      *
      * Both factors are integers, so the product is exact — this is the payoff
      * for keeping kWh and the rate out of floating point. The rate used is the
-     * one stored on this row, never ElectricityTariff::current(): a rate change
-     * must not reach backwards into a bill that was already read off the meter.
+     * one stored on this row, never the newest one anybody has typed: a rate
+     * change must not reach backwards into a bill already read off the meter.
+     * That is why the form only ever *defaults* the rate from the previous
+     * reading and never recomputes it on save.
      */
     protected function totalAmount(): Attribute
     {
@@ -192,9 +195,8 @@ class MeterReading extends Model implements HasMedia
 
     /**
      * Audit trail with an explicit allowlist, the same shape as Transaction.
-     * `rate` is on it deliberately: it is the one column here whose value is
-     * copied from somewhere else, so a row whose rate no longer matches any
-     * tariff is only explicable from the log.
+     * `rate` is on it deliberately: it is the figure every bill is computed
+     * from, and the one a correction is most likely to touch quietly.
      *
      * Photographs are a relation, not a column, so LogsActivity cannot see them
      * — their removal is recorded by AppServiceProvider::registerMediaDeletionLogging().
@@ -202,7 +204,7 @@ class MeterReading extends Model implements HasMedia
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()
-            ->logOnly(['room_id', 'start_kwh', 'start_read_at', 'end_kwh', 'end_read_at', 'rate', 'note'])
+            ->logOnly(['start_kwh', 'start_read_at', 'end_kwh', 'end_read_at', 'rate', 'note'])
             ->logOnlyDirty()
             ->dontLogEmptyChanges()
             ->useLogName('meter_reading');

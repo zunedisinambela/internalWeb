@@ -13,10 +13,9 @@ use Spatie\Activitylog\Support\LogOptions;
 /**
  * Somebody who buys from this consultant.
  *
- * It exists for the same reason Room does rather than a free text field on the
- * sale: "Ayu" and "ayu" would be two customers, and the question this feature is
- * really for — what has this person bought, and what did I make on it — could
- * not be answered reliably for either.
+ * A row rather than a free text field on the sale: "Ayu" and "ayu" would be two
+ * customers, and the question this feature is really for — what has this person
+ * bought, and what did I make on it — could not be answered reliably for either.
  *
  * Customers are retired, not deleted. sales.customer_id is restrictOnDelete, so
  * the database refuses to remove anyone with a sale against them; is_active is
@@ -196,8 +195,8 @@ class Customer extends Model
     }
 
     /**
-     * Audit trail with the columns listed explicitly, the same shape as Room.
-     * `phone` is a personal detail rather than a business figure, and it is on
+     * Audit trail with the columns listed explicitly, the same shape as
+     * Transaction. `phone` is a personal detail rather than a business figure, and it is on
      * the list deliberately: a number changed on the wrong row is how a message
      * about an order reaches the wrong person.
      *
