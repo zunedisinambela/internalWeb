@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Sales\Pages;
 
+use App\Filament\Resources\Concerns\ReturnsToListAfterSaving;
 use App\Filament\Resources\Sales\SaleResource;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\ViewAction;
@@ -9,6 +10,8 @@ use Filament\Resources\Pages\EditRecord;
 
 class EditSale extends EditRecord
 {
+    use ReturnsToListAfterSaving;
+
     protected static string $resource = SaleResource::class;
 
     /**

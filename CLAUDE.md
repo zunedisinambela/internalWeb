@@ -464,6 +464,19 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   Creating a class there is enough; no manual registration. `Filament/Widgets` does not currently
   exist — the panel provider still points `discoverWidgets()` at it, which is harmless, but see
   the dashboard note below before creating it.
+- **Discovery walks the whole tree, subdirectories included, and filters in a fixed order:**
+  `class_exists()`, then not-abstract, then `is_subclass_of($baseClass)`, then `isDiscovered()`.
+  That order is why `app/Filament/Resources/Concerns/` can sit inside the scanned directory
+  holding shared page behaviour — `ReturnsToListAfterSaving` is a **trait**, and `class_exists()`
+  is `false` for a trait, so it is dropped on the *first* check rather than on the base-class one.
+  An abstract base class put there would be dropped on the second.
+  The gap is between the third check and the two before it: a **concrete** class in that tree
+  extending `Livewire\Component` is queued for Livewire registration *before* the `$baseClass`
+  filter runs, so it is registered even though it is not a resource. Nothing does that today. If
+  something needs to, `php artisan route:list` and
+  `Filament::getPanel('admin')->getResources()` are the two things to check — the latter returns
+  nine, and a helper class that accidentally becomes the tenth costs nothing visible until it
+  collides with a slug (see the empty-path note under Stack notes).
 - Generate with `php artisan make:filament-resource`, `make:filament-page`, `make:filament-widget`.
 - v5 renamed the filter builder: use `->schema([...])`, not the deprecated `->form([...])`.
 - **A page's body is a schema, not Blade.** v5 has no `filament-panels::form.actions`
@@ -531,6 +544,24 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
     a second Livewire request. A test doing `get(...)->assertSee($row)` fails against a manager
     that works; drive the component with `Livewire::test($manager::class, ['ownerRecord' => …,
     'pageClass' => …])` instead, and keep the page test to what the page itself renders.
+- **Simpan on an edit screen returns to the list, on the four feature resources only.**
+  `App\Filament\Resources\Concerns\ReturnsToListAfterSaving` overrides `getRedirectUrl()`, and
+  `EditTransaction`, `EditSale`, `EditCustomer` and `EditMeterReading` use it. Filament's own
+  default is to **stay**: `EditRecord::getRedirectUrl()` returns `null` for as long as the user may
+  still access the page it is on, and only leaves when that authorization has just been lost — so
+  the ordinary successful save is precisely the case that never moves, and a form long enough to
+  have scrolled reports itself with a notification above the fold.
+  The panel offers `->resourceEditPageRedirect('index')`, one line against four, and it was
+  rejected for the same reason as `readOnlyRelationManagersOnResourceViewPagesByDefault` above: it
+  is a *default*, so every resource added afterwards inherits it silently, including one where
+  staying on the form is right. `EditUser` is deliberately outside the set, and
+  `EditRedirectTest::test_a_screen_without_the_trait_stays_on_its_form` is the assertion that
+  refuses the trade — swap the trait for the flag and the four positive tests stay green.
+  Two consequences of leaving. **The list is rebuilt from scratch**: no table here calls
+  `persistFiltersInSession()`, so a filter, a search term and the page number are all gone by the
+  time the edited row is back on screen — staying on the form used to make browser-back restore
+  all three. And **the write is never traded for the redirect**: `EditRecord::save()` writes,
+  commits the transaction, sends the saved notification and reads `getRedirectUrl()` last.
 - `TextColumn::money()` does **not** divide by 100 — its `$divideBy` parameter defaults to `0`,
   which is falsy, so the state is formatted as given. Pass `divideBy: 100` explicitly for a
   column stored in minor units. It also renders two decimal places unless given

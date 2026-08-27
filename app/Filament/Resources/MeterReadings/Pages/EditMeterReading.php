@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\MeterReadings\Pages;
 
+use App\Filament\Resources\Concerns\ReturnsToListAfterSaving;
 use App\Filament\Resources\MeterReadings\MeterReadingResource;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\ViewAction;
@@ -9,6 +10,8 @@ use Filament\Resources\Pages\EditRecord;
 
 class EditMeterReading extends EditRecord
 {
+    use ReturnsToListAfterSaving;
+
     protected static string $resource = MeterReadingResource::class;
 
     protected function getHeaderActions(): array
