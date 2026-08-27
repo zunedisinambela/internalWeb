@@ -20,7 +20,7 @@ class MeterReadingFactory extends Factory
         return [
             'start_kwh' => $start,
             'end_kwh' => $start + fake()->numberBetween(10, 200),
-            'rate' => 1_500,
+            'total_amount' => fake()->numberBetween(15, 300) * 10_000,
             // A period, so the closing moment is always after the opening one —
             // the form refuses the reverse, and a factory that produced it would
             // hand every test a row the UI cannot create.
@@ -59,15 +59,19 @@ class MeterReadingFactory extends Factory
     }
 
     /**
-     * A reading with an exact consumption and an exact rate, so a test asserting
-     * on the total never depends on a random figure.
+     * A reading with an exact consumption and an exact bill, so a test asserting
+     * on either never depends on a random figure.
+     *
+     * The two are independent now — nothing derives one from the other — so a
+     * test that pins consumption still has to say what was paid for it, and the
+     * default here is a figure rather than a rate applied to $kwh.
      */
-    public function usage(int $kwh, int $rate = 1_500, int $start = 1_000): static
+    public function usage(int $kwh, int $total = 150_000, int $start = 1_000): static
     {
         return $this->state(fn (): array => [
             'start_kwh' => $start,
             'end_kwh' => $start + $kwh,
-            'rate' => $rate,
+            'total_amount' => $total,
         ]);
     }
 }

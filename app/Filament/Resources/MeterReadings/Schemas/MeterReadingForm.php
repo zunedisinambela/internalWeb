@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\MeterReadings\Schemas;
 
+use App\Filament\Forms\Components\RupiahInput;
 use App\Models\MeterReading;
 use App\Rules\WholeRupiah;
 use Filament\Forms\Components\DateTimePicker;
@@ -11,19 +12,20 @@ use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
-use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 
 /**
- * One screen, read top to bottom: the two ends of the period, then the price,
- * then what is owed.
+ * One screen, read top to bottom: the two ends of the period, then what was
+ * paid for it.
  *
  * The room select and the "no tariff has been set" warning that used to open
- * this form are gone with the screens behind them. What replaced them is the
- * simplest thing that keeps the same guarantee: everything the bill is computed
- * from is typed or defaulted *here*, on the row it belongs to, so no screen
- * elsewhere can change what a recorded period costs.
+ * this form are gone with the screens behind them, and so is the price per kWh
+ * that replaced them. Nothing on this form is a factor in a calculation any
+ * more: the two meter figures are evidence of how much was used, and the amount
+ * is what the bill said. That is the strongest version of the guarantee the
+ * tariff table was removed to get — a recorded period cannot be repriced by any
+ * screen anywhere, because nothing recomputes it.
  */
 class MeterReadingForm
 {
@@ -151,47 +153,47 @@ class MeterReadingForm
                             ]),
                     ]),
 
-                Section::make('Tarif')
-                    ->description('Harga per kWh yang berlaku untuk periode ini.')
-                    ->icon(Heroicon::OutlinedBolt)
-                    ->columns(2)
+                Section::make('Tagihan')
+                    ->description('Jumlah yang harus dibayar untuk periode ini.')
+                    ->icon(Heroicon::OutlinedBanknotes)
+                    ->columns(3)
                     ->components([
-                        TextInput::make('rate')
-                            ->label('Tarif per kWh')
-                            ->prefix('Rp')
-                            ->suffix('/kWh')
-                            // Asked for on every reading now, rather than copied
-                            // from a tariff screen that no longer exists. The
-                            // figure still lands on this row and is still what
-                            // the bill is computed from, so a price that changes
-                            // next month cannot reach backwards into this period
-                            // — that was the point of the copy, and it survives
-                            // the screen it used to be copied from.
-                            //
-                            // Only ever *defaulted* from the previous reading.
-                            // Recomputing it on save would be the repricing the
-                            // whole design refuses.
-                            ->default(fn (): ?int => self::defaultRate())
-                            // Neither ->numeric() nor ->integer(), so the field
-                            // can show a grouped figure — the two are mutually
-                            // exclusive with a thousands separator, because both
-                            // force type="number" and a number input cannot
-                            // display "1.500".
-                            ->inputMode('numeric')
-                            ->maxLength(9)
-                            ->required()
-                            ->rule(new WholeRupiah(min: 1, max: 100_000))
-                            ->live(onBlur: true)
-                            ->afterStateUpdated(static function (Set $set, mixed $state): void {
-                                if (! WholeRupiah::isUnambiguous($state)) {
-                                    return;
-                                }
+                        // Read-only, and the only arithmetic left on the screen.
+                        // It is here rather than in a section of its own because
+                        // it is what the amount beside it is checked against: a
+                        // bill that jumped while the meter barely moved is
+                        // visible in one glance, and neither figure is derived
+                        // from the other any more, so the two can genuinely
+                        // disagree.
+                        TextEntry::make('usage_preview')
+                            ->label('Pemakaian')
+                            ->state(static fn (Get $get): string => number_format(self::usage($get), 0, ',', '.').' kWh')
+                            ->color(static fn (Get $get): ?string => self::usage($get) < 0 ? 'danger' : null)
+                            ->weight('bold'),
 
-                                $set('rate', WholeRupiah::format($state));
-                            })
-                            ->formatStateUsing(static fn (mixed $state): ?string => WholeRupiah::format($state))
-                            ->dehydrateStateUsing(static fn (mixed $state): ?int => WholeRupiah::toInteger($state))
-                            ->helperText('Terisi dari pencatatan sebelumnya. Ubah bila tarif naik.'),
+                        // Typed off the bill, not computed. There is deliberately
+                        // no ->default() carrying the previous reading's amount
+                        // forward the way the rate used to be: a price repeats
+                        // month to month and an amount does not, so a prefill
+                        // here would be a plausible wrong number sitting in the
+                        // one field nobody can check against anything else.
+                        RupiahInput::make('total_amount')
+                            ->label('Total tagihan')
+                            ->required()
+                            // A period where the meter did not move really does
+                            // cost nothing, and refusing Rp 0 with "Jumlah harus
+                            // rupiah penuh" would describe the wrong problem.
+                            // ->required() is still what catches an empty field;
+                            // a zero has to be typed.
+                            ->allowingZero()
+                            // Narrows the component's own rule rather than
+                            // replacing it — Filament appends, so both apply and
+                            // a value has to satisfy each. The ceiling is what
+                            // catches the typo this field is most exposed to: one
+                            // extra zero on a figure nothing else on the row can
+                            // contradict.
+                            ->rule(new WholeRupiah(min: 0, max: 50_000_000))
+                            ->helperText('Sesuai tagihan yang diterima untuk periode ini.'),
 
                         TextInput::make('note')
                             ->label('Catatan')
@@ -199,46 +201,8 @@ class MeterReadingForm
                             ->helperText('Misalnya "meteran diganti" atau "angka sulit dibaca".'),
                     ]),
 
-                Section::make('Perhitungan')
-                    ->columns(2)
-                    ->components([
-                        // Computed here for the screen only; nothing is stored.
-                        // The stored columns are the two meter figures and the
-                        // rate, and everything else is derived from them — a
-                        // stored total would be a fourth number that can disagree
-                        // with the three it came from.
-                        TextEntry::make('usage_preview')
-                            ->label('Pemakaian')
-                            ->state(static fn (Get $get): string => number_format(self::usage($get), 0, ',', '.').' kWh')
-                            ->weight('bold'),
-
-                        TextEntry::make('total_preview')
-                            ->label('Total tagihan')
-                            ->state(static fn (Get $get): string => 'Rp '.number_format(self::total($get), 0, ',', '.'))
-                            ->weight('bold')
-                            ->color(static fn (Get $get): string => self::usage($get) < 0 ? 'danger' : 'success'),
-                    ]),
-
             ])
             ->columns(1);
-    }
-
-    /**
-     * What the rate field opens at on a new reading.
-     *
-     * Carried forward from the previous reading, which is the only figure this
-     * app still knows: the tariff table that used to answer this was removed
-     * with the landlord-shaped screens. A tariff that has not moved is then one
-     * fewer thing to type each month, and one that has moved is a field already
-     * on screen waiting to be corrected.
-     *
-     * Null on the very first reading, and deliberately not a made-up default —
-     * `rate` is NOT NULL and required, so the form asks rather than guessing a
-     * number that would go straight onto a bill.
-     */
-    private static function defaultRate(): ?int
-    {
-        return MeterReading::previous()?->rate;
     }
 
     /**
@@ -286,15 +250,10 @@ class MeterReadingForm
      *
      * Not clamped at zero, for the same reason MeterReading::usage_kwh is not:
      * while the closing figure is still below the opening one the preview should
-     * say so in red, not show a plausible Rp 0.
+     * say so in red rather than reading as a period of no consumption.
      */
     private static function usage(Get $get): int
     {
         return (int) $get('end_kwh') - (int) $get('start_kwh');
-    }
-
-    private static function total(Get $get): int
-    {
-        return self::usage($get) * (int) WholeRupiah::toInteger($get('rate'));
     }
 }

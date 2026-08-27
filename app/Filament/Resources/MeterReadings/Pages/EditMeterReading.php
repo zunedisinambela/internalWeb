@@ -14,9 +14,10 @@ class EditMeterReading extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
-            // No rate-refresh action any more. It existed to recopy a rate from
-            // the tariff table when one had been entered wrong; with the rate
-            // typed on this form, the field itself is the correction.
+            // No rate-refresh action any more, and no rate either. It existed to
+            // recopy a price from the tariff table when one had been entered
+            // wrong; the amount is typed off the bill now, so the field itself
+            // is the correction.
             ViewAction::make(),
             DeleteAction::make(),
         ];

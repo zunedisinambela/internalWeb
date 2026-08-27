@@ -36,9 +36,11 @@ use Filament\Schemas\Components\Utilities\Set;
  * WholeRupiah(max: 100_000)) — ends up with both, and a value has to satisfy
  * each. Narrowing composes; there is no way to accidentally widen.
  *
- * `Transaction::$amount` and `MeterReading::$rate` predate this component and
- * still spell the trio out inline. Converting them is a separate change to
- * tested financial code, not a side effect of adding a new screen.
+ * `Transaction::$amount` predates this component and still spells the trio out
+ * inline. Converting it is a separate change to tested financial code, not a
+ * side effect of adding a new screen. `MeterReading::$rate` was the other one
+ * and is no longer a field at all — the amount that replaced it is built from
+ * here, because a replacement is a new field rather than a conversion.
  */
 class RupiahInput extends TextInput
 {

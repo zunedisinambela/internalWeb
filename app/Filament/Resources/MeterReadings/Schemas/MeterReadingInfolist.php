@@ -67,24 +67,17 @@ class MeterReadingInfolist
                             ]),
                     ]),
 
-                // The rate is shown here now, which it was not while a separate
-                // tariff screen existed: back then a rate printed beside the
-                // total invited recomputing the bill from *today's* tariff,
-                // which is the one number that must never be applied to a period
-                // already closed. There is no other rate to confuse it with any
-                // more — this row carries the only one — so printing both halves
-                // of the multiplication is what makes the total checkable.
+                // One figure, printed on its own. There used to be a rate beside
+                // it, so that both halves of usage x rate were on screen and the
+                // total was checkable against them. There is no multiplication
+                // left to check: the amount is what the bill said, and the kWh
+                // it was charged for are already at the top of this screen.
                 Section::make('Tagihan')
-                    ->columns(2)
                     ->components([
-                        TextEntry::make('rate')
-                            ->label('Tarif per kWh')
-                            ->formatStateUsing(fn (int $state): string => 'Rp '.number_format($state, 0, ',', '.').' /kWh'),
-
                         TextEntry::make('total_amount')
                             ->label('Total tagihan')
                             ->formatStateUsing(fn (int $state): string => 'Rp '.number_format($state, 0, ',', '.'))
-                            ->color(fn (MeterReading $record): string => $record->total_amount < 0 ? 'danger' : 'success')
+                            ->color('success')
                             ->weight('bold')
                             ->size('lg'),
                     ]),

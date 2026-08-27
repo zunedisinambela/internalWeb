@@ -155,7 +155,7 @@ expensive to undo.
 |------|--------|--------------------------------|
 | `docs/access-control.md` | roles, the panel gate, the log-viewer gate, sign-in identifiers, two-factor | Roles are the only source of truth — there is no `is_admin` column, and any role opens the panel. Either the email or the username signs a user in. |
 | `docs/keuangan.md` | the cash book at `/transactions`, receipts, the queued Excel/PDF export | Amounts are whole rupiah in an integer column, never a decimal. The export renders on the queue, so no worker means no file **and no error**. |
-| `docs/listrik-kost.md` | meter readings at `/meter-readings`, their photographs, the rate | One screen, one meter. The rate **lives on the reading**, never anywhere shared — a price entered this month must not reprice a bill already issued. Rooms and a versioned tariff table used to sit beside it and were dropped; the file records what that migration destroyed. |
+| `docs/listrik-kost.md` | meter readings at `/meter-readings`, their photographs, the amount paid | One screen, one meter. The panel **records** a bill, it does not compute one: `total_amount` is typed off the bill and `usage_kwh` is derived from the two meter figures, with nothing multiplying the one by the other. Rooms, a versioned tariff table and a rate per kWh all used to sit here and were dropped in turn; the file records what each of those migrations destroyed. |
 | `docs/oriflame.md` | sales and customers, the three figures, the item count, the bonus and its handovers | The three prices are totals for the whole order; `quantity` counts items and reprices nothing. Ongkir is the consultant's cost, not a line on the customer's bill. The free item is counted **per customer across every order**, never per sale — `Sale::$free_quantity` still exists and has no UI. What was *earned* is derived from the orders; what was *collected* is a recorded row, and the two must not be merged. |
 | `docs/monitoring.md` | `/visits`, `/authentications`, `/activities`, retention at `/monitoring` | The package's own six routes are unauthenticated and are disabled by an empty `routes/user-monitoring.php`. Deleting that file brings them all back. |
 | `docs/media.md` | medialibrary, the six collections, the private disk, the lightbox | Attachments go on the private `local` disk, and every Filament component rendering one needs `->visibility('private')` — without it the image silently breaks and nothing is logged. |
@@ -234,10 +234,10 @@ Three things to know before adding a key:
   directly. It is the only thing standing between that wrapper and a tidy-looking deletion.
 - **The cache stops at the presentation layer.** A badge may serve a stale figure; anything a
   bill is computed from may not. That line used to be held by keeping the kWh badge off the
-  method the reading form defaulted its rate from; it is now held by there being no shared rate
-  at all — every reading carries its own (see Listrik kost). Re-derive the rule before caching
-  any figure a form defaults from: a stale badge is a wrong sidebar, a stale default is a wrong
-  bill, permanently.
+  method the reading form defaulted its rate from; then by there being no shared rate at all,
+  every reading carrying its own; and now by nothing computing a bill anywhere — the amount is
+  typed (see Listrik kost). Re-derive the rule before caching any figure a form defaults from: a
+  stale badge is a wrong sidebar, a stale default is a wrong bill, permanently.
 
 Invalidation is event-driven from `Transaction::booted()` — `saved` *and* `deleted`, because
 either alone misses half the writes. Model events are the whole mechanism, so the way a badge
@@ -547,7 +547,13 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   casts to **1** with no error. Use `->notGreaterThan()` rather than Laravel's `->lte()` to
   compare two of them; `lte` decides how to compare from `is_numeric()`, which reads
   `"150.000"` as a number and `"1.500.000"` as a string length. `->allowingZero()` lifts the
-  `WholeRupiah` floor for a field where nothing is a real answer. See Oriflame.
+  `WholeRupiah` floor for a field where nothing is a real answer — the ongkir on a sale handed
+  over rather than posted, and the bill for a month the meter did not move. Narrow the range
+  with a further `->rule(new WholeRupiah(max: …))` where a typed figure has no plausible
+  ceiling of its own: Filament appends rules, so narrowing composes and widening by accident is
+  impossible. See Oriflame and Listrik kost.
+  `Transaction::$amount` is the one field left spelling the trio out inline rather than using
+  this component; converting it is a change to tested financial code, not a tidy-up.
 - **`->stripCharacters()` is validation-only.** `TextInput::mutateStateForValidation()` applies
   it; `mutateDehydratedState()` does not. What is *stored* is the unstripped state, so pair it
   with `->dehydrateStateUsing()` — or the rules see one value and the column receives another.
@@ -602,9 +608,9 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   whenever the value still has to reach the row, and assert the stored value in a test:
   the form shows no error, and the failure surfaces as a NOT NULL violation naming a field the
   user cannot see. **No field in this project is hidden today** — `MeterReadingForm`'s rate was
-  the worked example and became an ordinary visible field when the tariff screen supplying it
-  was removed (see Listrik kost), so the flag appears nowhere and the next hidden field is
-  written from this note alone.
+  the worked example, became an ordinary visible field when the tariff screen supplying it was
+  removed, and has since been replaced altogether by a typed amount (see Listrik kost), so the
+  flag appears nowhere and the next hidden field is written from this note alone.
 - **A value written into a date picker has to match that picker's own precision**, whether it
   arrives from `->default()`, from `$set()` or from an `afterStateUpdated()`. A `DateTimePicker`
   configured `->seconds(false)` carries state as `Y-m-d H:i`, so writing `Y-m-d H:i:s` puts a
@@ -632,11 +638,16 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   `->description(..., position: 'below')` rather than in a column of its own — a column of mostly
   zeroes costs a row's width to say nothing, and on a derived value it would also be a sort
   control with no expression behind it, which is the next bullet.
-- **A column with nothing behind it cannot sort itself.** `TextColumn::make('total_amount')`
-  fed by `->state()` from a model accessor has no database column, so `->sortable()` alone
-  produces a control that reorders by nothing. Pass the expression explicitly —
+- **A column with nothing behind it cannot sort itself.** `TextColumn::make('usage_kwh')` fed
+  by `->state()` from a model accessor has no database column, so `->sortable()` alone produces
+  a control that reorders by nothing. Pass the expression explicitly —
   `->sortable(query: fn (Builder $q, string $direction) => $q->orderByRaw("… {$direction}"))`.
-  `MeterReadingsTable` does this for both derived columns.
+  `MeterReadingsTable` does this for `usage_kwh`, and **`total_amount` on the same table is the
+  instructive counter-case**: it carried an `orderByRaw` of its own until the column stopped
+  being derived, and the plain `->sortable()` it has now is correct precisely because there is a
+  column to order by. So the question is never which figure looks computed — it is whether the
+  state comes from a column or from an accessor, and that answer changes under you when a
+  feature is reshaped. See Listrik kost.
 - **Navigation groups are set per resource**, not in the panel provider: `$navigationGroup`
   on each `Resource`, with `$navigationSort` ordering within the group. `Oriflame` is the worked
   example, ordering the screen that is worked in daily first and the ones that are set up then

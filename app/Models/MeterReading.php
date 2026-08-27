@@ -16,15 +16,21 @@ use Spatie\MediaLibrary\MediaCollections\Models\Media;
 
 /**
  * One reading of the electricity meter: the figure it started at, the figure it
- * ended at, photographs of the dial behind both, and the rate it is billed at.
+ * ended at, photographs of the dial behind both, and the amount paid for the
+ * period.
  *
  * There is one meter. The feature used to file every reading under a Room and
  * copy its rate out of a versioned electricity_tariffs table, which is the shape
  * a landlord billing several tenants needs; it is now shaped for the tenant
- * recording their own meter, so a reading stands on its own and carries its own
- * rate. What survived that change is the part that mattered — `rate` is still a
- * figure on this row, so a price entered today cannot reach backwards into a
- * period already read off the dial.
+ * recording their own meter, so a reading stands on its own.
+ *
+ * It no longer computes a bill either. A rate per kWh was the last piece of the
+ * landlord shape left: it existed so `usage x rate` could be worked out here,
+ * which is a calculation the person paying the bill never performs — they are
+ * handed a figure. So `total_amount` is what the row records and the
+ * multiplication is gone. The guarantee that made the rate worth storing comes
+ * along for free: an amount already paid is a fact about that period, and there
+ * is no shared figure left anywhere that a later change could reprice it from.
  *
  * The second model in this project to use medialibrary, and it follows the
  * decision Transaction settled — the private `local` disk. A photograph of a
@@ -68,7 +74,7 @@ class MeterReading extends Model implements HasMedia
         'start_read_at',
         'end_kwh',
         'end_read_at',
-        'rate',
+        'total_amount',
         'note',
         'user_id',
     ];
@@ -78,7 +84,7 @@ class MeterReading extends Model implements HasMedia
         return [
             'start_kwh' => 'integer',
             'end_kwh' => 'integer',
-            'rate' => 'integer',
+            'total_amount' => 'integer',
             'start_read_at' => 'datetime',
             'end_read_at' => 'datetime',
         ];
@@ -107,8 +113,8 @@ class MeterReading extends Model implements HasMedia
      *
      * `id` is the tiebreak, for the same reason CashBook orders by it — two
      * readings sharing a timestamp would otherwise come back in whatever order
-     * the engine felt like, and this value becomes the opening figure and the
-     * default rate of the next reading.
+     * the engine felt like, and this row becomes the opening figure and the
+     * opening moment of the next reading.
      *
      * `$before` and `$excludingId` are both there for the edit screen: without
      * them, reopening a reading offers that same row as its own predecessor,
@@ -142,21 +148,6 @@ class MeterReading extends Model implements HasMedia
     protected function usageKwh(): Attribute
     {
         return Attribute::get(fn (): int => $this->end_kwh - $this->start_kwh);
-    }
-
-    /**
-     * What the tenant owes for this reading, in whole rupiah.
-     *
-     * Both factors are integers, so the product is exact — this is the payoff
-     * for keeping kWh and the rate out of floating point. The rate used is the
-     * one stored on this row, never the newest one anybody has typed: a rate
-     * change must not reach backwards into a bill already read off the meter.
-     * That is why the form only ever *defaults* the rate from the previous
-     * reading and never recomputes it on save.
-     */
-    protected function totalAmount(): Attribute
-    {
-        return Attribute::get(fn (): int => $this->usage_kwh * $this->rate);
     }
 
     /**
@@ -195,8 +186,9 @@ class MeterReading extends Model implements HasMedia
 
     /**
      * Audit trail with an explicit allowlist, the same shape as Transaction.
-     * `rate` is on it deliberately: it is the figure every bill is computed
-     * from, and the one a correction is most likely to touch quietly.
+     * `total_amount` is on it deliberately: it is the money, and now that it is
+     * typed rather than computed there is nothing else on the row that would
+     * contradict a quiet correction to it.
      *
      * Photographs are a relation, not a column, so LogsActivity cannot see them
      * — their removal is recorded by AppServiceProvider::registerMediaDeletionLogging().
@@ -204,7 +196,7 @@ class MeterReading extends Model implements HasMedia
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()
-            ->logOnly(['start_kwh', 'start_read_at', 'end_kwh', 'end_read_at', 'rate', 'note'])
+            ->logOnly(['start_kwh', 'start_read_at', 'end_kwh', 'end_read_at', 'total_amount', 'note'])
             ->logOnlyDirty()
             ->dontLogEmptyChanges()
             ->useLogName('meter_reading');

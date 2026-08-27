@@ -39,7 +39,7 @@ so `total_cost` and `profit` read exactly as they did before the column existed.
 reading was available and was rejected: making them per-unit prices would silently reinterpret
 every row already recorded, since a stored `190.000` would start meaning `190.000 × quantity`
 with nothing on the row saying which reading was intended. That is the same class of change the
-rate-on-the-reading rule under Listrik kost exists to prevent, arriving through a new column
+amount-on-the-reading rule under Listrik kost exists to prevent, arriving through a new column
 instead of through a join. `test_the_quantity_does_not_change_the_money` records two orders with identical
 figures and item counts of 1 and 20 and asserts they cost and earn the same; without it the
 feature passes every other test under either reading.
@@ -177,8 +177,10 @@ contradict the columns it came from, and nothing would say which was right. Two 
 together: drop the last one and the column receives the string `"1.500.000"`, which SQLite's
 loose typing casts and stores as **1** — no exception, no validation message, and a price that
 reads as a rounding bug months later. Three fields on this form need it.
-`Transaction::$amount` and `MeterReading::$rate` predate it and still spell the trio out inline;
-converting them is a separate change to tested financial code.
+`Transaction::$amount` predates it and still spells the trio out inline; converting it is a
+separate change to tested financial code. `MeterReading::$rate` was the other holdout and is no
+longer a field — the amount that replaced it is a `RupiahInput`, because a replacement is a new
+field rather than a conversion.
 
 **`->allowingZero()` is on the ongkir field and nowhere else.** `WholeRupiah`'s floor is 1,
 which is right for a price — an amount of nothing is a half-filled form and `->required()` is
@@ -297,9 +299,10 @@ lines were machinery for a question nobody was asking. Three things follow.
   on another row. There is no catalogue table left to join to, so every figure on a sale was
   typed onto that sale and nothing outside it can move one. That is also why there is no
   refresh-prices button: correcting a figure is editing the field.
-  Listrik kost reached the same conclusion from the other direction: its `RefreshRateAction`
-  existed only because the rate came from a table the reading joined nothing to, and it was
-  deleted along with that table. No action of that shape is left in the project — which means
+  Listrik kost reached the same conclusion from the other direction, twice: its
+  `RefreshRateAction` existed only because the rate came from a table the reading joined nothing
+  to, and it was deleted along with that table — and the rate itself has since gone the same way,
+  leaving a typed amount with nothing to refresh it from. No action of that shape is left in the project — which means
   the next copied figure has no worked example, and Listrik kost is where the properties one
   needs are written down.
 - **Per-product history is genuinely lost.** "What sells best" and "what did this product cost

@@ -71,21 +71,18 @@ class MeterReadingsTable
                     ->sortable(query: fn (Builder $query, string $direction): Builder => $query
                         ->orderByRaw("(end_kwh - start_kwh) {$direction}")),
 
-                TextColumn::make('rate')
-                    ->label('Tarif')
-                    ->alignEnd()
-                    ->formatStateUsing(fn (int $state): string => 'Rp '.number_format($state, 0, ',', '.'))
-                    ->sortable()
-                    ->toggleable(isToggledHiddenByDefault: true),
-
+                // A stored column now rather than usage x rate, so ->sortable()
+                // takes no expression: there is a real column to order by. The
+                // colour went with the arithmetic too — the column is unsigned,
+                // so unlike Pemakaian above it has no negative case to warn
+                // about.
                 TextColumn::make('total_amount')
                     ->label('Tagihan')
                     ->alignEnd()
-                    ->state(fn (MeterReading $record): string => 'Rp '.number_format($record->total_amount, 0, ',', '.'))
-                    ->color(fn (MeterReading $record): string => $record->total_amount < 0 ? 'danger' : 'success')
+                    ->formatStateUsing(fn (int $state): string => 'Rp '.number_format($state, 0, ',', '.'))
+                    ->color('success')
                     ->weight('bold')
-                    ->sortable(query: fn (Builder $query, string $direction): Builder => $query
-                        ->orderByRaw("((end_kwh - start_kwh) * rate) {$direction}")),
+                    ->sortable(),
 
                 self::photos('photos_start', MeterReading::PHOTOS_START, 'Foto awal'),
                 self::photos('photos_end', MeterReading::PHOTOS_END, 'Foto akhir'),
@@ -150,7 +147,7 @@ class MeterReadingsTable
                 ]),
             ])
             ->emptyStateHeading('Belum ada pencatatan')
-            ->emptyStateDescription('Catat angka meteran awal dan akhir periode ini, lalu tarif per kWh-nya.');
+            ->emptyStateDescription('Catat angka meteran awal dan akhir periode ini, lalu jumlah tagihannya.');
     }
 
     /**
