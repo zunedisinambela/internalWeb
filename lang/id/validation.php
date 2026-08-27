@@ -219,6 +219,9 @@ return [
         'customer_id' => 'pelanggan',
         'product_id' => 'produk',
         'quantity' => 'jumlah',
+        'redeemed_at' => 'tanggal pengambilan',
+        'tracking_number' => 'nomor resi',
+        'shipping_proofs' => 'foto resi',
         'items' => 'daftar produk',
         // The repeater nests its fields under an index, so a rule that fires on
         // a line reports `items.0.product_id`. Laravel matches the wildcard form

@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Customers\Tables;
 
+use App\Models\Customer;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
@@ -11,12 +12,19 @@ use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 class CustomersTable
 {
     public static function configure(Table $table): Table
     {
         return $table
+            // Both figures the bonus needs, as two aggregate subqueries on the
+            // one list query. ->sum() on the column above supplies the first;
+            // the second has no column to hang off, so it is asked for here.
+            // Walking either relation per row would be a query per customer, and
+            // this list is the screen most likely to hold a full page of them.
+            ->modifyQueryUsing(fn (Builder $query): Builder => $query->withSum('freeItemRedemptions', 'quantity'))
             ->defaultSort('name')
             ->columns([
                 TextColumn::make('name')
@@ -42,6 +50,40 @@ class CustomersTable
                     ->alignEnd()
                     ->sortable()
                     ->badge(),
+
+                // The item count and the bonus it earns, asked of the database
+                // rather than of the relation: Customer::$total_quantity walks
+                // the sales in PHP, which is one query per row here, while
+                // ->sum() is one aggregate subquery on the list query — the same
+                // reasoning the count column above records. The bonus is not a
+                // second column: it is only ever read alongside the count it
+                // comes from, and a column of mostly zeroes would cost a row's
+                // width to say nothing.
+                TextColumn::make('sales_sum_quantity')
+                    ->label('Barang')
+                    ->sum('sales', 'quantity')
+                    ->alignEnd()
+                    ->sortable()
+                    ->formatStateUsing(fn (?int $state): string => number_format((int) $state, 0, ',', '.'))
+                    // What the list is scanned for is who is still owed
+                    // something, so the description carries the *remainder*
+                    // rather than the earned figure: a customer who has already
+                    // collected both of their free items needs nothing done.
+                    ->description(function (Customer $record): ?string {
+                        $earned = Customer::freeItemsFor($record->sales_sum_quantity);
+                        $remaining = self::remainingFreeItems($record);
+
+                        return match (true) {
+                            $remaining > 0 => '+'.$remaining.' gratis belum diambil',
+                            $earned > 0 => 'gratis sudah diambil',
+                            default => null,
+                        };
+                    }, position: 'below')
+                    ->color(fn (Customer $record): string => match (true) {
+                        self::remainingFreeItems($record) < 0 => 'danger',
+                        self::remainingFreeItems($record) > 0 => 'success',
+                        default => 'gray',
+                    }),
 
                 IconColumn::make('is_active')
                     ->label('Aktif')
@@ -101,5 +143,23 @@ class CustomersTable
             ])
             ->emptyStateHeading('Belum ada pelanggan')
             ->emptyStateDescription('Tambahkan orang yang membeli dari Anda, lalu catat penjualannya.');
+    }
+
+    /**
+     * Free items earned but not yet collected, from the two subqueries above.
+     *
+     * Reads the aggregates rather than Customer::$free_quantity_available, which
+     * is the same arithmetic over loaded relations — the accessor is right on the
+     * view screen, where the relations are already in memory, and is a pair of
+     * queries per row here. Both divide through Customer::freeItemsFor(), so the
+     * two routes cannot disagree about what twenty items are worth.
+     *
+     * Either aggregate arrives as null for a customer with no rows on that side,
+     * which is why both are cast rather than added directly.
+     */
+    private static function remainingFreeItems(Customer $record): int
+    {
+        return Customer::freeItemsFor($record->sales_sum_quantity)
+            - (int) $record->free_item_redemptions_sum_quantity;
     }
 }

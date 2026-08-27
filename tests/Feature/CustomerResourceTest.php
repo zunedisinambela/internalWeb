@@ -90,6 +90,113 @@ class CustomerResourceTest extends TestCase
     }
 
     /**
+     * The rule this screen answers, and the one place it differs from the sale.
+     *
+     * Sale::$free_quantity divides one order's own count, so two orders of ten
+     * earn nothing at all. The customer's bonus is counted across every order
+     * instead, because a customer buying ten a month is the ordinary case and
+     * the other reading throws away every remainder at the row boundary — the
+     * same twenty items would be worth a free one or nothing depending only on
+     * how many trips they were bought in.
+     *
+     * Both readings are asserted here together: without the per-sale half, this
+     * would still pass if Customer::$free_quantity were ever quietly rewritten
+     * as a sum of the sales' own bonuses.
+     */
+    public function test_the_free_item_is_counted_across_orders_not_per_order(): void
+    {
+        $customer = Customer::factory()->named('Zunedi')->create();
+
+        $first = Sale::factory()->forCustomer($customer)->quantity(10)->create();
+        $second = Sale::factory()->forCustomer($customer)->quantity(10)->create();
+
+        $customer->refresh();
+
+        $this->assertSame(0, $first->free_quantity);
+        $this->assertSame(0, $second->free_quantity);
+
+        $this->assertSame(20, $customer->total_quantity);
+        $this->assertSame(1, $customer->free_quantity);
+        $this->assertSame(Sale::FREE_ITEM_THRESHOLD, $customer->quantity_to_next_free_item);
+    }
+
+    /**
+     * A remainder is carried rather than dropped, so the count keeps running
+     * across the threshold instead of restarting at each order.
+     */
+    public function test_the_bonus_counts_every_whole_threshold_and_names_the_distance_to_the_next(): void
+    {
+        $customer = Customer::factory()->create();
+
+        Sale::factory()->forCustomer($customer)->quantity(25)->create();
+        Sale::factory()->forCustomer($customer)->quantity(18)->create();
+
+        $customer->refresh();
+
+        $this->assertSame(43, $customer->total_quantity);
+        $this->assertSame(2, $customer->free_quantity);
+        $this->assertSame(17, $customer->quantity_to_next_free_item);
+    }
+
+    /**
+     * A customer who has bought nothing owes the whole threshold, not nothing —
+     * otherwise an empty record reads as one item away from a free item.
+     */
+    public function test_a_customer_with_no_sales_has_earned_nothing(): void
+    {
+        $customer = Customer::factory()->create();
+
+        $this->assertSame(0, $customer->total_quantity);
+        $this->assertSame(0, $customer->free_quantity);
+        $this->assertSame(Sale::FREE_ITEM_THRESHOLD, $customer->quantity_to_next_free_item);
+    }
+
+    /**
+     * The bonus carries no money here either, for the reason it carries none on
+     * the sale: whether the free item is still paid for to Oriflame has not been
+     * decided, so folding it into either total would put a figure on screen that
+     * nobody entered.
+     */
+    public function test_the_customer_bonus_leaves_the_money_alone(): void
+    {
+        $customer = Customer::factory()->create();
+
+        Sale::factory()->forCustomer($customer)->quantity(20)
+            ->priced(marketing: 150_000, catalog: 200_000)->create();
+
+        $customer->refresh();
+
+        $this->assertSame(1, $customer->free_quantity);
+        $this->assertSame(200_000, $customer->total_spent);
+        $this->assertSame(50_000, $customer->total_profit);
+    }
+
+    /**
+     * The list reads the same figure from a ->sum() subquery rather than from
+     * the accessor, so the two arithmetics are asserted against one screen. The
+     * bonus rides on the count column as a description: it is only ever read
+     * beside the count it comes from.
+     */
+    public function test_the_customer_list_shows_the_item_count_and_the_bonus_it_earned(): void
+    {
+        $this->actingAs($this->superAdmin());
+
+        $qualifies = Customer::factory()->named('Zunedi')->create();
+        Sale::factory()->forCustomer($qualifies)->quantity(10)->count(2)->create();
+
+        $shortOfIt = Customer::factory()->named('Ayu')->create();
+        Sale::factory()->forCustomer($shortOfIt)->quantity(4)->create();
+
+        Livewire::test(ListCustomers::class)
+            ->assertCanSeeTableRecords([$qualifies, $shortOfIt])
+            ->assertTableColumnStateSet('sales_sum_quantity', 20, $qualifies)
+            ->assertTableColumnStateSet('sales_sum_quantity', 4, $shortOfIt)
+            // The description names what is still owed rather than what was
+            // earned; FreeItemRedemptionTest covers the collected half.
+            ->assertSee('+1 gratis belum diambil');
+    }
+
+    /**
      * The resource-level half of the delete rule, which turns the foreign key's
      * refusal into a missing button rather than a stack trace. On the resource
      * and not on the action, because Filament consults the resource for the row

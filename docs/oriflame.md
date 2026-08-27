@@ -17,6 +17,10 @@ to send, and is sold on at the catalogue price of Rp 220.000. The margin is Rp 2
 | Amounts | `App\Filament\Forms\Components\RupiahInput` on `App\Rules\WholeRupiah` |
 | Figures | `sales.marketing_price`, `sales.shipping_cost`, `sales.catalog_price` |
 | Count | `sales.quantity`, and `Sale::FREE_ITEM_THRESHOLD` / `Sale::$free_quantity` on top of it |
+| Bonus per customer | `Customer::$total_quantity` / `$free_quantity` / `$quantity_to_next_free_item`, over `Customer::freeItemsFor()` |
+| Handover | `App\Models\FreeItemRedemption`, `free_item_redemptions`, on the customer screen via `Resources/Customers/RelationManagers/FreeItemRedemptionsRelationManager` |
+| Owed | `Customer::$free_quantity_claimed` / `$free_quantity_available` |
+| Resi | `free_item_redemptions.tracking_number` plus media collection `FreeItemRedemption::SHIPPING_PROOFS`, private `local` disk |
 | Evidence | media collections `Sale::PAYMENT_PROOFS` / `::SHIPPING_PROOFS`, private `local` disk |
 
 **Ongkir is the consultant's cost, not a line on the customer's bill.** The customer pays
@@ -52,9 +56,97 @@ column cannot be added to a table that already holds rows without one.
 reason the margin is, so correcting a quantity moves the bonus with it and the two cannot
 disagree. It is deliberately absent from `total_cost` and `profit`: whether the free item is
 still paid for to Oriflame has not been decided, and folding a guess in would put a figure on
-the margin that nobody entered. The form and the view screen therefore show it beside the two
-money figures rather than inside them, and
-`test_the_free_item_carries_no_money` asserts the margin is untouched at exactly the threshold.
+the margin that nobody entered. `test_the_free_item_carries_no_money` asserts the margin is untouched at exactly the threshold.
+
+**No sale screen shows a bonus, and none should.** The form, the list and the view screen each
+used to carry the per-sale figure beside the money; all three were removed once the customer
+became the span the bonus is counted over. A per-order figure on a sale screen is a second,
+always-smaller answer to the same question — an order of ten reads "0 gratis" while the customer
+it belongs to has just earned one — shown on the screens least able to explain the difference.
+`Sale::$free_quantity` stays as an accessor because it is what
+`test_the_free_item_is_counted_across_orders_not_per_order` asserts *against* to keep the two
+readings from being collapsed into one; it has no UI left. Two consequences worth knowing before
+putting one back: the quantity field on `SaleForm` is no longer `->live()`, because that was
+there only to move the removed preview, and a bonus preview cannot honestly be rebuilt on that
+form at all — the figure depends on the customer's *other* orders, which an unsaved form would
+have to go and query.
+
+**The bonus is counted twice, over two different spans, and that is the point.** `Sale::$free_quantity`
+divides one order's own count; `Customer::$free_quantity` divides everything that customer has
+ever bought — `Customer::$total_quantity`. Two orders of ten items earn **nothing** on either
+sale and **one free item** on the customer, and neither figure is wrong: the sale answers "does
+this order qualify on its own", the customer answers "what is this person owed".
+
+The customer reading is not a sum of the sale readings, and must not become one. Summing them
+discards every remainder at the row boundary, so the same twenty items would be worth a free one
+or nothing at all depending only on how many trips they were bought in — and buying ten a month
+is the ordinary case, not the exception. `test_the_free_item_is_counted_across_orders_not_per_order`
+asserts both halves in one test for that reason: without the per-sale assertion it would still
+pass if the customer accessor were quietly rewritten as `sales->sum(fn ($s) => $s->free_quantity)`.
+
+The division itself lives in `Customer::freeItemsFor()` because two screens reach it by different
+routes. The view screen walks the loaded relation like every other total here; the **list** cannot
+— a walk per row is a query per row — so `CustomersTable` reads the same figure back from a
+`->sum('sales', 'quantity')` subquery, which arrives as `null` for a customer with no sales at
+all. One static, so the two cannot start disagreeing about what twenty items are worth.
+
+**What was earned is derived; what was collected is recorded.** Those are two different kinds of
+fact and the feature keeps them apart. `Customer::$free_quantity` divides the orders and moves
+whenever a `quantity` is corrected — it cannot disagree with the sales because it is made of
+them. Whether the customer actually turned up for their free item is not answerable from any
+order, so it is a row: `App\Models\FreeItemRedemption`, one per handover, carrying the date, how
+many were taken, the courier's resi and a photograph of it.
+
+`Customer::$free_quantity_claimed` sums those rows and `$free_quantity_available` is
+`earned − claimed`. A counter column on `customers` was the alternative and is the usual mistake:
+it would be a number able to disagree with the handovers it was incremented from, and deleting a
+handover recorded by mistake would leave it behind.
+
+**`$free_quantity_available` is deliberately not clamped at zero**, for the reason `Sale::$profit`
+and `MeterReading::$usage_kwh` are not. The form refuses to hand over more than is owed, so a
+negative cannot come from the panel — it can only mean a handover was recorded against an order
+later corrected downwards. That is a real bookkeeping problem, and red is how it gets noticed;
+`max(0, …)` renders the same customer as one who happens to be owed nothing.
+`test_a_bonus_collected_and_then_unearned_reads_as_a_negative` pins it, and it is also the answer
+to "why doesn't a handover reduce the earned figure": a handover that happened is not undone by an
+edit to an order, and the two figures disagreeing *is* the report.
+
+**The handover screen is a relation manager, not a resource**, and that decision carries three
+consequences worth knowing:
+
+- **It is writable only because `isReadOnly()` is overridden.** Filament makes relation managers
+  read-only on a `ViewRecord` page by default, and the failure is silent in the worst way — the
+  table renders with its rows and the create, edit and delete buttons are simply absent, exactly
+  as though the user lacked a permission. The override is on the manager rather than on the panel
+  flag, which would change every manager added later.
+- **Shield generates permissions from resources, so this model has none.** `FreeItemRedemptionPolicy`
+  is written by hand against the *customer's* permissions — reading is `View:Customer`, every
+  write is `Update:Customer` — because a policy naming `ViewAny:FreeItemRedemption` would refuse
+  everybody, including a super admin: the permission does not exist to be granted. If handovers
+  ever get a screen of their own, that stops being right; the policy says so in place.
+- **There is no global list.** "Every free item collected in August, across all customers" is not
+  answerable from the panel, only from `activity_log` under the `free_item_redemption` log name.
+  That was the trade for keeping the figures beside the bonus they draw down.
+
+**The form refuses to hand over more than is owed**, and the check reads `fresh()` rather than the
+owner record the page was rendered with. That is the whole substance of
+`FreeItemRedemptionsRelationManager::availableFor()`: a handover saved a moment ago is not in the
+relation loaded at render time, so a check against the copy in memory would let the same bonus be
+collected twice within one page.
+`test_a_second_handover_is_measured_against_what_the_first_one_left` is what holds it. When an
+existing row is edited its own quantity is added back, or a row that used up the last bonus could
+never have its resi corrected — `test_an_existing_handover_can_be_edited_without_being_refused_by_itself`.
+The create button is *hidden* rather than disabled once nothing is owed: a form every submission of
+which is refused explains the rule worse than its absence beside the empty state does.
+
+**The resi is a column and a photograph, not one or the other.** `tracking_number` is searchable
+and can be pasted into the courier's site; the photograph is what survives when the number was
+never written down. Both are optional, because a free item handed over in person has no resi at
+all — the common case for a nearby customer. The collection is named `shipping-proofs`, the same
+name `Sale` uses: media rows are keyed by morph, so the two never meet, and naming it to match
+says it is evidence of the same kind of event. Private disk and `->visibility('private')` on
+every component rendering it, for the reason under Media — a resi carries the customer's home
+address.
 
 `FREE_ITEM_THRESHOLD` is a constant rather than a settings row, because today it is one rule for
 everybody and a table nobody edits drifts out of date in silence. When it starts varying per
@@ -69,9 +161,16 @@ contradict the columns it came from, and nothing would say which was right. Two 
   themselves, but the margin is not, and `->sortable()` alone on a `->state()` column renders a
   control that silently reorders by nothing. `Sale::PROFIT_EXPRESSION` holds the SQL, beside the
   accessor it has to agree with.
-- **The customer list shows a count, not a margin.** The totals walk a loaded relation, so a
-  margin per row would be a query per customer; a `withSum` would be a second copy of the
-  arithmetic. The view screen calls `loadMissing('sales')` instead.
+- **The customer list shows counts, not a margin.** The money totals walk a loaded relation, so a
+  margin per row would be a query per customer; a `withSum` of the margin would be a second copy
+  of arithmetic `Customer::$total_profit` already owns. The view screen calls
+  `loadMissing('sales')` instead. The **item** count is the one figure the list does aggregate —
+  `->sum('sales', 'quantity')` is a single subquery and the arithmetic on top of it is one
+  `intdiv` shared with the accessor, so there is no second copy to drift. The handovers are summed
+  the same way, through `->modifyQueryUsing(… withSum('freeItemRedemptions', 'quantity'))`, because
+  what the list is scanned for is who is still **owed** something rather than who has earned
+  something. Either aggregate arrives as `null` for a customer with no rows on that side, which is
+  why `Customer::freeItemsFor()` takes a nullable int.
 
 **`RupiahInput` is where the grouped-rupiah trio lives.** `->live(onBlur)` +
 `afterStateUpdated`, `->formatStateUsing()` and `->dehydrateStateUsing()` have to travel
@@ -223,6 +322,8 @@ lines were machinery for a question nobody was asking. Three things follow.
 | `customer_id`, `occurred_at`, `quantity`, all three figures, `note` on a sale | `LogsActivity`, log name `sale` |
 | an attachment removed, from either collection | `AppServiceProvider::registerMediaDeletionLogging()`, event `sale_attachment_deleted` |
 | a customer's name, phone, address or status | `LogsActivity`, log name `customer` |
+| a free item collected: date, count, resi, note | `LogsActivity`, log name `free_item_redemption` |
+| the resi photograph of a handover removed | `AppServiceProvider::registerMediaDeletionLogging()`, event `redemption_resi_deleted` |
 | an attachment added or replaced | **nothing** |
 
 All three figures are on the `sale` allowlist deliberately: they are the whole record of the
@@ -252,9 +353,10 @@ unrelated mechanisms lining up, medialibrary removing files from the `deleting` 
   questions as the meter readings: what happens to the transaction when the sale is edited or
   deleted, and whether a sale is money received now or money owed. Two independent records are
   honest until those are settled.
-- **The free item does not reach the money.** `Sale::$free_quantity` says an order of 20 earns
-  one, and nothing more happens: it is not subtracted from `marketing_price`, not added to what
-  the customer received, and not reported per customer. The unanswered question is whether the
+- **The free item does not reach the money.** The count side is now complete — earned, collected
+  and owed are all answerable, and a handover carries its date and resi — but none of it touches
+  a figure: the bonus is not subtracted from `marketing_price` and not added to what the customer
+  received. The unanswered question is whether the
   consultant still pays Oriflame for it — if they do it is already inside `marketing_price` and
   the margin is right as it stands; if they do not, the figure is a discount and needs saying so
   somewhere. Deciding it is a change to the accessors on `Sale`, not a new column.

@@ -36,6 +36,31 @@ class MeterReadingFactory extends Factory
     }
 
     /**
+     * Keeps the period running forwards when a test pins only one end of it.
+     *
+     * The opening moment above is random across five months, and most tests here
+     * override `end_read_at` alone — so roughly one run in twenty drew a start
+     * *after* the pinned end and failed on "Waktu pembacaan akhir tidak boleh
+     * mendahului waktu pembacaan awal", a message about the form rather than
+     * about the test. Dragging the start back is the same invariant the
+     * definition states: a factory must not hand out a row the UI refuses to
+     * create.
+     *
+     * afterMaking rather than afterCreating, so the row is corrected before it
+     * is written rather than saved wrong and fixed afterwards.
+     */
+    public function configure(): static
+    {
+        return $this->afterMaking(function (MeterReading $reading): void {
+            if ($reading->start_read_at < $reading->end_read_at) {
+                return;
+            }
+
+            $reading->start_read_at = $reading->end_read_at->copy()->subDays(30);
+        });
+    }
+
+    /**
      * A reading with an exact consumption and an exact rate, so a test asserting
      * on the total never depends on a random figure.
      */

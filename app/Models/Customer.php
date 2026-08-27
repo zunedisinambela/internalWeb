@@ -52,6 +52,14 @@ class Customer extends Model
     }
 
     /**
+     * @return HasMany<FreeItemRedemption, $this>
+     */
+    public function freeItemRedemptions(): HasMany
+    {
+        return $this->hasMany(FreeItemRedemption::class);
+    }
+
+    /**
      * Everything ever earned from this customer.
      *
      * Walks the sales rather than reading a stored figure, for the reason every
@@ -82,6 +90,109 @@ class Customer extends Model
         return Attribute::get(fn (): int => $this->sales->sum(
             fn (Sale $sale): int => $sale->catalog_price,
         ));
+    }
+
+    /**
+     * How many items this customer has ever bought, across every order.
+     *
+     * Derived like every other total here, and it is what the bonus below is
+     * answerable from. Only cheap on a loaded relation — the callers that walk
+     * it load it (`loadMissing('sales')` on the view screen); the list screen
+     * asks the database for the same figure with ->sum() instead, which is why
+     * the division lives in freeItemsFor() rather than inline in either.
+     */
+    protected function totalQuantity(): Attribute
+    {
+        return Attribute::get(fn (): int => $this->sales->sum(
+            fn (Sale $sale): int => $sale->quantity,
+        ));
+    }
+
+    /**
+     * How many free items this customer has earned in total.
+     *
+     * **This counts across orders, and Sale::$free_quantity does not.** Two
+     * orders of ten items each earn nothing per sale and one free item here,
+     * which is the whole reason this exists as a second accessor rather than a
+     * sum of the first: summing per-sale bonuses would throw away every
+     * remainder at the row boundary, so the same twenty items would be worth a
+     * free one or nothing depending on how many trips they were bought in.
+     * A customer buying ten a month is the ordinary case, so that reading is
+     * the one that matters.
+     *
+     * Carries no money, exactly as the per-sale figure does not — see
+     * Sale::$free_quantity for why the margin is left alone.
+     *
+     * **Nothing records a bonus as claimed.** This is a lifetime count, so a
+     * free item handed over is still counted here forever; deciding otherwise
+     * means a column recording redemptions, not a change to this line.
+     */
+    protected function freeQuantity(): Attribute
+    {
+        return Attribute::get(fn (): int => self::freeItemsFor($this->total_quantity));
+    }
+
+    /**
+     * How many free items this customer has actually collected.
+     *
+     * The one figure in this feature that is *recorded* rather than derived, and
+     * it has to be: whether somebody turned up for their free item is a fact
+     * about the world, not arithmetic over their orders. Summed from the
+     * handovers rather than kept as a counter on this row for the ordinary
+     * reason — a counter would be a second number able to disagree with the rows
+     * it was incremented from, and deleting a mistaken handover would leave it
+     * behind.
+     */
+    protected function freeQuantityClaimed(): Attribute
+    {
+        return Attribute::get(fn (): int => $this->freeItemRedemptions->sum(
+            fn (FreeItemRedemption $redemption): int => $redemption->quantity,
+        ));
+    }
+
+    /**
+     * What this customer is still owed: earned minus collected.
+     *
+     * **Deliberately not clamped at zero.** The redemption form refuses to hand
+     * over more than is available, so a negative figure here cannot come from
+     * the panel — it can only come from a handover recorded against an order
+     * that was later corrected downwards, or from a row written outside the
+     * form. That is a real bookkeeping problem and showing it as a negative in
+     * red is how it gets noticed; max(0, …) would render the same customer as
+     * one who happens to be owed nothing, which is the reading that hides it.
+     * The same reason Sale::$profit and MeterReading::$usage_kwh are not
+     * clamped.
+     */
+    protected function freeQuantityAvailable(): Attribute
+    {
+        return Attribute::get(fn (): int => $this->free_quantity - $this->free_quantity_claimed);
+    }
+
+    /**
+     * How many items are still to be bought before the next free one.
+     *
+     * Zero items owe the full threshold rather than nothing, so a customer with
+     * no orders reads as "20 lagi" instead of as one about to earn a bonus.
+     */
+    protected function quantityToNextFreeItem(): Attribute
+    {
+        return Attribute::get(
+            fn (): int => Sale::FREE_ITEM_THRESHOLD - ($this->total_quantity % Sale::FREE_ITEM_THRESHOLD),
+        );
+    }
+
+    /**
+     * The bonus arithmetic, in one place.
+     *
+     * The accessor above reads a figure summed in PHP off a loaded relation; the
+     * customer list reads the same figure back from a ->sum('sales', 'quantity')
+     * subquery, which arrives as null when the customer has no sales at all.
+     * Both divide here so the two screens cannot start disagreeing about what
+     * twenty items are worth.
+     */
+    public static function freeItemsFor(?int $quantity): int
+    {
+        return intdiv(max(0, (int) $quantity), Sale::FREE_ITEM_THRESHOLD);
     }
 
     /**

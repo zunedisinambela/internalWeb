@@ -27,13 +27,18 @@ class SaleInfolist
                             ->label('Tanggal pembelian')
                             ->dateTime('d M Y H:i'),
 
+                        // The count alone. The bonus this feeds is counted per
+                        // customer, not per order — two orders of ten earn a
+                        // free item between them and nothing on either row — so
+                        // a per-sale figure here would be a second, smaller
+                        // answer to the same question on the screen least able
+                        // to explain the difference. It lives on the customer,
+                        // beside the total it is divided from.
                         TextEntry::make('quantity')
                             ->label('Jumlah produk')
-                            ->state(fn (Sale $record): string => $record->free_quantity > 0
-                                ? sprintf('%d barang (+%d gratis)', $record->quantity, $record->free_quantity)
-                                : sprintf('%d barang', $record->quantity))
+                            ->state(fn (Sale $record): string => sprintf('%d barang', $record->quantity))
                             ->helperText(sprintf(
-                                'Setiap %d barang dapat 1 gratis.',
+                                'Bonus 1 gratis per %d barang dihitung dari total belanja pelanggan.',
                                 Sale::FREE_ITEM_THRESHOLD,
                             )),
 
@@ -67,7 +72,7 @@ class SaleInfolist
                     ]),
 
                 Section::make('Ringkasan')
-                    ->columns(3)
+                    ->columns(2)
                     ->components([
                         TextEntry::make('total_cost')
                             ->label('Total modal')
@@ -80,20 +85,6 @@ class SaleInfolist
                             ->weight('bold')
                             ->size('lg')
                             ->color(fn (Sale $record): string => $record->profit < 0 ? 'danger' : 'success'),
-
-                        // Deliberately not folded into the two figures beside
-                        // it. The free item carries no rupiah in this feature —
-                        // whether it is still paid for to Oriflame has not been
-                        // decided — so showing it here as a count keeps the
-                        // margin reading exactly as it did before the column
-                        // existed.
-                        TextEntry::make('free_quantity')
-                            ->label('Gratis')
-                            ->state(fn (Sale $record): string => $record->free_quantity.' barang')
-                            ->weight('bold')
-                            ->size('lg')
-                            ->color(fn (Sale $record): string => $record->free_quantity > 0 ? 'success' : 'gray')
-                            ->helperText('Belum diperhitungkan ke modal maupun keuntungan.'),
                     ]),
 
                 Section::make('Lampiran')

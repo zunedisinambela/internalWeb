@@ -81,13 +81,14 @@ class SaleForm
                             ->numeric()
                             ->integer()
                             ->minValue(1)
-                            // Live so the bonus below moves while the number is
-                            // being typed. onBlur rather than on every keystroke,
-                            // matching the rupiah fields — a round trip per digit
-                            // makes the field feel heavy for no gain.
-                            ->live(onBlur: true)
+                            // Not ->live(): nothing on this form reacts to the
+                            // count any more. The bonus it feeds is counted per
+                            // customer over every order, so it is answered on the
+                            // customer screen where the total it divides lives —
+                            // an order being typed cannot show it without
+                            // querying the other orders behind the form.
                             ->helperText(sprintf(
-                                'Banyaknya barang dalam pesanan ini. Setiap %d barang dapat 1 gratis.',
+                                'Banyaknya barang dalam pesanan ini. Bonus 1 gratis per %d barang dihitung dari total belanja pelanggan.',
                                 Sale::FREE_ITEM_THRESHOLD,
                             )),
 
@@ -137,7 +138,7 @@ class SaleForm
                     ]),
 
                 Section::make('Ringkasan')
-                    ->columns(3)
+                    ->columns(2)
                     ->components([
                         // Computed for the screen only; nothing here is stored.
                         // The margin is an accessor over the three columns above,
@@ -156,21 +157,6 @@ class SaleForm
                             ->color(static fn (Get $get): string => self::figures($get)['profit'] < 0
                                 ? 'danger'
                                 : 'success'),
-
-                        // The count question, kept away from the two money
-                        // figures beside it on purpose: the free item carries no
-                        // rupiah anywhere in this feature yet. Whether it is
-                        // still paid for to Oriflame — and so whether it belongs
-                        // in `marketing_price` — has not been decided, and
-                        // folding a guess into the margin would put a number on
-                        // screen that nobody entered.
-                        TextEntry::make('free_quantity_preview')
-                            ->label('Gratis')
-                            ->state(static fn (Get $get): string => self::bonus($get).' barang')
-                            ->weight('bold')
-                            ->size('lg')
-                            ->color(static fn (Get $get): string => self::bonus($get) > 0 ? 'success' : 'gray')
-                            ->helperText(static fn (Get $get): string => self::bonusNote($get)),
                     ]),
 
                 Section::make('Lampiran')
@@ -269,39 +255,6 @@ class SaleForm
             'cost' => $cost,
             'profit' => $catalog - $cost,
         ];
-    }
-
-    /**
-     * The bonus as the form currently stands.
-     *
-     * Reads the same intdiv() Sale::$free_quantity does, for the same reason
-     * figures() repeats the margin: that accessor reads an integer off a saved
-     * row, this reads whatever is in an unsaved form. Both are one division with
-     * no rounding to disagree about.
-     */
-    private static function bonus(Get $get): int
-    {
-        return intdiv(max(0, (int) $get('quantity')), Sale::FREE_ITEM_THRESHOLD);
-    }
-
-    /**
-     * What to say underneath the bonus.
-     *
-     * Showing "0 barang" and nothing else answers the question asked but not the
-     * one meant: somebody typing 18 wants to know they are two short, and that
-     * is exactly the moment a consultant would offer to round the order up. So
-     * the distance to the next free item is named whenever there is one.
-     */
-    private static function bonusNote(Get $get): string
-    {
-        $quantity = max(0, (int) $get('quantity'));
-        $remaining = Sale::FREE_ITEM_THRESHOLD - ($quantity % Sale::FREE_ITEM_THRESHOLD);
-
-        if ($quantity < 1) {
-            return 'Isi jumlah produk terlebih dahulu.';
-        }
-
-        return sprintf('Kurang %d barang lagi untuk gratis berikutnya.', $remaining);
     }
 
     /**

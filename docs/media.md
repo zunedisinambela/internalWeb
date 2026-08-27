@@ -11,12 +11,18 @@ published config claims this exact one but expects a fully-qualified driver clas
 sharing it means setting the variable breaks whichever package did not get the format it
 wanted — while the package that *appears* broken is not the one whose setting changed.
 
-**Three models use it, across five collections**: `App\Models\Transaction` through `receipts`
+**Four models use it, across six collections**: `App\Models\Transaction` through `receipts`
 (see Keuangan), `App\Models\MeterReading` through `meter-photos-start` and `meter-photos-end`
 (see Listrik kost) — a collection per meter figure, so a photograph says for itself which number
-it is evidence for — and `App\Models\Sale` through `payment-proofs` and `shipping-proofs` (see
+it is evidence for — `App\Models\Sale` through `payment-proofs` and `shipping-proofs` (see
 Oriflame), on the same reasoning: a transfer receipt and a courier resi answer different
-questions, and a single collection could only tell them apart by upload order.
+questions, and a single collection could only tell them apart by upload order — and
+`App\Models\FreeItemRedemption` through `shipping-proofs`, the resi of a free item handed over.
+
+That last one reuses a collection *name* rather than inventing one, and it is not a collision:
+media rows are keyed by morph, so `shipping-proofs` on a redemption and `shipping-proofs` on a
+sale are separate sets that never meet. Naming it to match says the two hold the same kind of
+evidence; the model it hangs off says which event it is evidence of.
 
 **A collection per kind of evidence is the pattern here, not a quirk of two features.** Both
 splits exist because `collection_name` is a column nothing in the UI can scramble, while upload

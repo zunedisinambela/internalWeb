@@ -46,9 +46,10 @@ php artisan cache:clear            # last resort for a stuck navigation badge �
   and `/authentications`. Installed as a data collector only; its own routes and Blade
   dashboards are disabled. See Monitoring.
 - **spatie/laravel-medialibrary v11** — file attachments on Eloquent models, `media` table.
-  Three models, five collections: `App\Models\Transaction` for receipt images,
-  `App\Models\MeterReading` for meter photographs under a collection per meter figure, and
-  `App\Models\Sale` for a transfer receipt and a courier resi under one collection each. All on
+  Four models, six collections: `App\Models\Transaction` for receipt images,
+  `App\Models\MeterReading` for meter photographs under a collection per meter figure,
+  `App\Models\Sale` for a transfer receipt and a courier resi under one collection each, and
+  `App\Models\FreeItemRedemption` for the resi of a free item handed over. All on
   the private `local` disk.
   v11, not v12: spatie backported `illuminate ^13` into the v11 line, while v12 is unreleased
   and requires `php ^8.4` against this project's `^8.3` pin. See Media.
@@ -68,7 +69,6 @@ php artisan cache:clear            # last resort for a stuck navigation badge �
   `->databaseNotifications()` and a `notifications` table exists. The **cache** store is
   load-bearing there as well — the job is `ShouldBeUnique`, and that lock lives in the cache, so
   `CACHE_STORE` has to be a store shared across processes. See Keuangan.
-- **Database is SQLite** (`database/database.sqlite`), gitignored via `database/.gitignore`.
 - **`CACHE_STORE` has two consumers, and each one rules out a different driver.** The export
   lock above needs a store every *process* can see, including the queue worker — so a `file`
   store split across a web box and a worker box guards nothing. The panel figures in
@@ -81,6 +81,7 @@ php artisan cache:clear            # last resort for a stuck navigation badge �
   the suite runs `QUEUE_CONNECTION=sync`, so there is no second process for the lock to be
   shared with, and a cache that dies with the test is what keeps one test's cached balance out
   of the next one. `PanelCacheTest` exercises the caching within a single test for that reason.
+- **Database is SQLite** (`database/database.sqlite`), gitignored via `database/.gitignore`.
   Tests run against `:memory:` (see `phpunit.xml`), so they never touch the dev database.
 - Frontend: Vite 8 + Tailwind 4. Filament ships its own compiled CSS/JS and does not go
   through the app's Vite build — so `resources/css/app.css` styles nothing in the panel, which
@@ -130,7 +131,7 @@ rendering as the raw key. That also means a forgotten translation is easy to mis
 
 - Activity log `event` keys (`role_granted`, `role_revoked`, `visit_deleted`, `sign_in_deleted`,
   `records_pruned`, `two_factor_reset`, `receipt_deleted`, `meter_photo_deleted`,
-  `sale_attachment_deleted`, `transactions_exported`), enum values stored in columns (`income`, `expense` —
+  `sale_attachment_deleted`, `redemption_resi_deleted`, `transactions_exported`), enum values stored in columns (`income`, `expense` —
   see Keuangan), role names (`super_admin`) and permission names (`Delete:Activity`).
   These are filtered on and asserted in tests. Only the human-readable description is
   translated — `LogRoleChange` and `User::booted()` both map the two separately for exactly
@@ -155,9 +156,9 @@ expensive to undo.
 | `docs/access-control.md` | roles, the panel gate, the log-viewer gate, sign-in identifiers, two-factor | Roles are the only source of truth — there is no `is_admin` column, and any role opens the panel. Either the email or the username signs a user in. |
 | `docs/keuangan.md` | the cash book at `/transactions`, receipts, the queued Excel/PDF export | Amounts are whole rupiah in an integer column, never a decimal. The export renders on the queue, so no worker means no file **and no error**. |
 | `docs/listrik-kost.md` | rooms, versioned tariffs, meter readings at `/meter-readings` | The rate is **copied** onto a reading, never joined to. A tariff raised today must not reprice a bill already issued. |
-| `docs/oriflame.md` | sales and customers, the three figures and the item count | The three prices are totals for the whole order; `quantity` counts items and reprices nothing. Ongkir is the consultant's cost, not a line on the customer's bill. |
+| `docs/oriflame.md` | sales and customers, the three figures, the item count, the bonus and its handovers | The three prices are totals for the whole order; `quantity` counts items and reprices nothing. Ongkir is the consultant's cost, not a line on the customer's bill. The free item is counted **per customer across every order**, never per sale — `Sale::$free_quantity` still exists and has no UI. What was *earned* is derived from the orders; what was *collected* is a recorded row, and the two must not be merged. |
 | `docs/monitoring.md` | `/visits`, `/authentications`, `/activities`, retention at `/monitoring` | The package's own six routes are unauthenticated and are disabled by an empty `routes/user-monitoring.php`. Deleting that file brings them all back. |
-| `docs/media.md` | medialibrary, the five collections, the private disk, the lightbox | Attachments go on the private `local` disk, and every Filament component rendering one needs `->visibility('private')` — without it the image silently breaks and nothing is logged. |
+| `docs/media.md` | medialibrary, the six collections, the private disk, the lightbox | Attachments go on the private `local` disk, and every Filament component rendering one needs `->visibility('private')` — without it the image silently breaks and nothing is logged. |
 | `docs/pdf.md` | dompdf, `resources/views/pdf/` | dompdf's `chroot` is `base_path()` with `file://` allowed, so user text interpolated into a PDF view can reach `.env`. Escape with `{{ }}`, never `{!! !!}`. |
 | `docs/spreadsheet.md` | maatwebsite/excel v4, `App\Exports\` | `Worksheet::fromArray()` drops every `0` unless the export implements `WithStrictNullComparison`. Silently — the cell is simply never created. |
 | `docs/tests.md` | what each test file locks in, and how to test Filament, PDFs, spreadsheets and signed URLs | Any test that hits a route needs `RefreshDatabase`: every page request writes a visit row. |
@@ -171,7 +172,8 @@ everything else in this panel is there to keep them honest.
 coordinates and device serials from a phone camera survive into whatever disk it lands on — and
 on the `public` disk that metadata is fetchable by URL along with the image. Conversions are
 re-encoded and lose most of it, but the original is what `getUrl()` returns by default. The
-receipt, meter-photo and sale-attachment screens work around this rather than solve it: all render the `thumb`
+receipt, meter-photo, sale-attachment and redemption-resi screens work around this rather than
+solve it: all render the `thumb`
 conversion everywhere, so the original is only reached by a deliberate signed request. Nothing
 strips the original, and stripping it would be a decision about altering what a user uploaded.
 
@@ -179,10 +181,12 @@ That matters more for meter photographs than for receipts. A receipt is photogra
 it happens to be; a meter is bolted to the building, so its EXIF coordinates are the address of
 a property with tenants in it. A sale's attachments sit between the two: a transfer receipt is
 usually a screenshot and carries nothing, while a resi photographed at the counter carries
-wherever that counter was.
+wherever that counter was. The resi on a free-item handover is the same photograph taken for the
+same reason, so it sits at the same end of that range.
 
 **User-typed text reaches three kinds of surface, and each escapes differently.** A transaction
-description, a room's occupant, a tariff note, a sale note and a customer's address are all free
+description, a room's occupant, a tariff note, a sale note, a handover's note or tracking number,
+and a customer's address are all free
 text somebody typed into a form. Verified against the vendor source rather than assumed, because
 the three do not behave alike:
 
@@ -199,10 +203,6 @@ description, and carrying a user value in with it. Returning a plain string need
 runs through `e()`. `test_the_rate_refresh_confirmation_names_both_rates_and_escapes_the_tariff_note` is what keeps that from being
 quietly dropped, because the escape is one call that reviews cleanly whether it is there or not.
 
-**Policies for vendor models are not auto-discovered.** Laravel maps `App\Models\X` to
-`App\Policies\XPolicy`. `Activity` lives in a vendor namespace, so `ActivityPolicy` is
-registered by hand in `AppServiceProvider::registerVendorModelPolicies()`. Without that line
-the policy is silently ignored and every permission check on it passes. Shield prints a
 **Cached figures live in `App\Support\PanelCache`, and it is a data cache, not a page
 cache.** The panel owns the root path, so its sidebar renders on every screen — each navigation
 badge is an aggregate query paid on pages that have nothing to do with it. Three keys are held
@@ -255,6 +255,10 @@ the response — under Octane or any persistent worker it would outlive its requ
 outlives a *test*, which is why `PanelCacheTest` resets both in `setUp()`; without that a test
 reads what the previous test left behind and the cache layer is never exercised.
 
+**Policies for vendor models are not auto-discovered.** Laravel maps `App\Models\X` to
+`App\Policies\XPolicy`. `Activity` lives in a vendor namespace, so `ActivityPolicy` is
+registered by hand in `AppServiceProvider::registerVendorModelPolicies()`. Without that line
+the policy is silently ignored and every permission check on it passes. Shield prints a
 "requires registration" note when generating such policies — do not skip it.
 
 **Shield prints that note for `RolePolicy` too, and there it is wrong.** Its own service
@@ -279,19 +283,20 @@ properties; match the file you are editing.
 keep listing exactly those. The two-factor columns are absent on purpose: they are written by direct assignment, and a fillable secret is
 settable from any request that reaches a user form.
 
-**`booted()` is already taken on seven models.** Eloquent allows one `booted()` per class, so a
+**`booted()` is already taken on eight models.** Eloquent allows one `booted()` per class, so a
 second definition silently replaces the first rather than erroring — no warning, and the hook
 that vanishes is whichever one was there first. Add listeners inside the existing method.
 
 | Model | What its `booted()` does |
 |-------|--------------------------|
 | `User` | watches the two-factor column for change without recording its value |
-| `Transaction`, `MeterReading`, `ElectricityTariff`, `Sale` | stamp the author from the session |
+| `Transaction`, `MeterReading`, `ElectricityTariff`, `Sale`, `FreeItemRedemption` | stamp the author from the session |
 | `VisitMonitoring`, `AuthenticationMonitoring` | write the `visit_deleted` / `sign_in_deleted` audit entries |
 
 Trait boot methods are exempt: `bootInteractsWithMedia()` runs *in addition to* `booted()`,
-which is why the two coexist on `Transaction`, `MeterReading` and `Sale` — all three stamp or
-watch something from `booted()` while medialibrary registers its own hooks alongside.
+which is why the two coexist on `Transaction`, `MeterReading`, `Sale` and
+`FreeItemRedemption` — all four stamp or watch something from `booted()` while medialibrary
+registers its own hooks alongside.
 
 **`permission.events_enabled` is set to `true` on purpose.** It ships as `false`. Role grants
 and revocations are audited through those events, so turning it off silently removes the
@@ -380,18 +385,19 @@ with the role names in `properties`. Since a role is what grants panel access, t
 privilege-escalation trail — if it stops working the log looks healthy while missing the most
 important events.
 
-**Seven models carry the trait**, each with its own log name and its own explicit allowlist:
+**Eight models carry the trait**, each with its own log name and its own explicit allowlist:
 
 | Model | Log name | Feature |
 |-------|----------|---------|
 | `User` | `user` | Access control |
 | `Transaction` | `transaction` | Keuangan |
 | `Room`, `ElectricityTariff`, `MeterReading` | `room`, `tariff`, `meter_reading` | Listrik kost |
-| `Customer`, `Sale` | `customer`, `sale` | Oriflame |
+| `Customer`, `Sale`, `FreeItemRedemption` | `customer`, `sale`, `free_item_redemption` | Oriflame |
 
-Four of them pair the trait with a separate listener, because the thing worth auditing is not a
+Five of them pair the trait with a separate listener, because the thing worth auditing is not a
 column and `LogsActivity` cannot see it: roles on `User` (a pivot table), receipts on
-`Transaction`, photographs on `MeterReading` and attachments on `Sale` (all relations).
+`Transaction`, photographs on `MeterReading`, attachments on `Sale` and the resi on
+`FreeItemRedemption` (all relations).
 
 When adding the trait to another model, keep the same shape: name the log, list attributes
 explicitly, and add a test asserting nothing outside the allowlist reaches `attribute_changes`.
@@ -415,7 +421,10 @@ Log names in use: `user` (model changes including either sign-in identifier, rol
 two-factor changes), `transaction`
 (cash book rows and receipt deletions — see Keuangan), `room`, `tariff` and `meter_reading`
 (the electricity feature and its photo deletions — see Listrik kost), `sale`
-(orders and their attachment deletions) and `customer` (the Oriflame feature — see Oriflame),
+(orders and their attachment deletions), `free_item_redemption` (a free item collected, and its
+resi photograph removed — kept out of `sale` and `customer` because "when did somebody collect a
+free item" is a question read past both of them otherwise) and `customer` (the Oriflame feature
+— see Oriflame),
 and `monitoring`
 (deletions, prunes, and both cash book exports — a read that leaves the panel is recorded
 here rather than under `transaction`, because it is an operation on the book rather than a
@@ -474,6 +483,28 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   open. A widget that shows data guarded by a resource policy belongs under that resource
   (`Resources/<Name>/Widgets/`) and in its page's `getHeaderWidgets()`, where the policy is
   already enforced. `TransactionOverview` is the worked example.
+- **A relation manager on a *view* page is read-only until told otherwise, and it fails
+  silently.** `RelationManager::isReadOnly()` returns true for any page subclassing
+  `ViewRecord` while the panel keeps its default
+  `readOnlyRelationManagersOnResourceViewPagesByDefault`, and the result is not an error: the
+  table renders, the rows are there, and the create, edit and delete actions are simply absent —
+  indistinguishable from a permission the user has not been granted. Override `isReadOnly()` on
+  the manager that needs writing rather than flipping the panel flag, which would quietly change
+  every manager added afterwards. `FreeItemRedemptionsRelationManager` is the worked example.
+  Two more things about them, both worth knowing before writing the test:
+  - **It authorizes against the *related* model's policy**, not the owner's — `canViewForRecord()`
+    calls `authorize('viewAny', $relatedModel)`, and the row actions consult that policy too. So a
+    model reached only through a relation manager still needs a policy, and Shield will not have
+    generated one: Shield builds permissions from **resources**, so a model with no resource has
+    no `ViewAny:Thing` permission for a generated policy to check, and one naming it would refuse
+    everybody including a super admin. Write the policy by hand against the *owner's* permissions
+    — `FreeItemRedemptionPolicy` maps onto `View:Customer` / `Update:Customer` and records why.
+    Auto-discovery still applies, so `App\Models\X` → `App\Policies\XPolicy` needs no
+    registration.
+  - **It is lazy by default**, so the first response carries a placeholder and the rows arrive on
+    a second Livewire request. A test doing `get(...)->assertSee($row)` fails against a manager
+    that works; drive the component with `Livewire::test($manager::class, ['ownerRecord' => …,
+    'pageClass' => …])` instead, and keep the page test to what the page itself renders.
 - `TextColumn::money()` does **not** divide by 100 — its `$divideBy` parameter defaults to `0`,
   which is falsy, so the state is formatted as given. Pass `divideBy: 100` explicitly for a
   column stored in minor units. It also renders two decimal places unless given
@@ -579,6 +610,25 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   field never produces on its own. It still displays and still saves, so nothing fails — but
   `assertSchemaStateSet()` compares the raw string and every test written against the field's
   natural output disagrees with it. `MeterReadingForm` formats its prefill to match.
+- **The same derived figure reaches a list and a detail screen by two different routes, so the
+  arithmetic gets one home.** A total that walks a loaded relation is right on a view screen and
+  is a query per row on a list; the list therefore asks the database for it with
+  `->counts()` / `->sum('relation', 'column')` from
+  `Filament\Support\Concerns\CanAggregateRelatedModels`, which lands as a single subquery and
+  arrives as `sales_sum_quantity` — **`null`, not `0`, when the relation is empty**. Whatever is
+  computed on top of that figure must not be written twice: `Customer::freeItemsFor(?int)` is the
+  worked example, called by the accessor the view screen reads and by the table column that reads
+  the subquery, so the two cannot start disagreeing about what twenty items are worth. See
+  Oriflame.
+  **One column carries one aggregate**: `->sum()` sets a single relationship/column pair, so a
+  figure needing a *second* one — the customer list needs items bought *and* free items collected
+  — asks for it on the table query instead, with
+  `->modifyQueryUsing(fn (Builder $q) => $q->withSum('freeItemRedemptions', 'quantity'))`. Same
+  subquery, same `null`-when-empty, and no per-row walk of a second relation.
+  A figure that is only ever read *beside* the one it derives from belongs on that column's
+  `->description(..., position: 'below')` rather than in a column of its own — a column of mostly
+  zeroes costs a row's width to say nothing, and on a derived value it would also be a sort
+  control with no expression behind it, which is the next bullet.
 - **A column with nothing behind it cannot sort itself.** `TextColumn::make('total_amount')`
   fed by `->state()` from a model accessor has no database column, so `->sortable()` alone
   produces a control that reorders by nothing. Pass the expression explicitly —

@@ -40,19 +40,16 @@ class SalesTable
                     ->sortable()
                     ->weight('medium'),
 
+                // The count only. The bonus is counted across a customer's
+                // orders rather than within one, so it is shown where that total
+                // lives — the customer list carries it on `sales_sum_quantity`.
+                // Repeating a per-order figure here would answer the same
+                // question with a smaller number on every row.
                 TextColumn::make('quantity')
                     ->label('Jumlah')
                     ->alignEnd()
                     ->numeric()
-                    ->sortable()
-                    // Badged only when the order actually earned something, so
-                    // the column is scanned for the exceptions rather than read
-                    // row by row. The bonus has no column behind it and is not
-                    // sortable for that reason — it is a function of `quantity`,
-                    // which sorts identically.
-                    ->description(fn (Sale $record): ?string => $record->free_quantity > 0
-                        ? '+'.$record->free_quantity.' gratis'
-                        : null),
+                    ->sortable(),
 
                 // The three stored figures, in the order they are read off a
                 // note. Unlike the previous shape these are real columns, so

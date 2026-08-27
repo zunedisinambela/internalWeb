@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Listeners\LogRoleChange;
+use App\Models\FreeItemRedemption;
 use App\Models\MeterReading;
 use App\Models\Sale;
 use App\Models\Transaction;
@@ -82,6 +83,12 @@ class AppServiceProvider extends ServiceProvider
             'event' => 'sale_attachment_deleted',
             'description' => 'Lampiran penjualan dihapus',
             'owner_key' => 'sale_id',
+        ],
+        FreeItemRedemption::class => [
+            'log' => 'free_item_redemption',
+            'event' => 'redemption_resi_deleted',
+            'description' => 'Resi pengambilan barang gratis dihapus',
+            'owner_key' => 'free_item_redemption_id',
         ],
     ];
 

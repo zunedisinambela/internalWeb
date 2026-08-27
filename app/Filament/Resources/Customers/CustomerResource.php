@@ -6,6 +6,7 @@ use App\Filament\Resources\Customers\Pages\CreateCustomer;
 use App\Filament\Resources\Customers\Pages\EditCustomer;
 use App\Filament\Resources\Customers\Pages\ListCustomers;
 use App\Filament\Resources\Customers\Pages\ViewCustomer;
+use App\Filament\Resources\Customers\RelationManagers\FreeItemRedemptionsRelationManager;
 use App\Filament\Resources\Customers\Schemas\CustomerForm;
 use App\Filament\Resources\Customers\Schemas\CustomerInfolist;
 use App\Filament\Resources\Customers\Tables\CustomersTable;
@@ -66,7 +67,21 @@ class CustomerResource extends Resource
      */
     public static function canDelete(Model $record): bool
     {
-        return parent::canDelete($record) && ! $record->sales()->exists();
+        return parent::canDelete($record)
+            && ! $record->sales()->exists()
+            && ! $record->freeItemRedemptions()->exists();
+    }
+
+    /**
+     * The free items this customer has collected, shown on their own screen
+     * because a handover is unreadable away from the bonus it draws down.
+     * FreeItemRedemptionsRelationManager records why it is not a resource.
+     */
+    public static function getRelations(): array
+    {
+        return [
+            FreeItemRedemptionsRelationManager::class,
+        ];
     }
 
     public static function getPages(): array
