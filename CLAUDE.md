@@ -151,14 +151,40 @@ php artisan cache:clear            # last resort for a stuck navigation badge �
 
 ## Locale and timezone
 
-`APP_LOCALE=id`, `APP_TIMEZONE=Asia/Jakarta`. Write new UI strings in Indonesian.
+`APP_LOCALE=id`, `APP_TIMEZONE=Asia/Jakarta` — in `.env.example` and in development; see the
+production note below. Write new UI strings in Indonesian.
 
-**Timestamps are stored in WIB, not UTC.** This is the deliberate choice, and it is the one
-setting here that cannot be changed later without rewriting every stored timestamp — the values
-in the database carry no offset, so moving `app.timezone` silently reinterprets all of them.
-When it was first set, existing rows were shifted `+7 hours` by hand across `users`,
+**Timestamps are stored in local time, not UTC.** This is the deliberate choice, and it is the
+one setting here that cannot be changed later without rewriting every stored timestamp — the
+values in the database carry no offset, so moving `app.timezone` silently reinterprets all of
+them. When it was first set, existing rows were shifted `+7 hours` by hand across `users`,
 `activity_log`, `visits_monitoring`, `authentications_monitoring` and `monitoring_settings`.
 That was a one-off fix, not a migration; a migration would re-run elsewhere and shift twice.
+
+**Production does not run `Asia/Jakarta`.** The `.env` on the VPS carries
+`APP_TIMEZONE=Asia/Makassar` (WITA, UTC+8), so every timestamp written there is an hour ahead of
+the WIB it gets read as: a row created 13:05 WIB is stored, and shown in the panel, as `14:05`.
+Checked 2026-08-29; the file predates the teardown and redeploy that day, so this is not
+fallout from it.
+
+Nothing catches this, and the reasons stack:
+
+- `.env` is not in git, so `.env.example` holding the right value proves nothing about the
+  server.
+- On the VPS `.env` sits beside `compose.yml`, *outside* the build context, so it survives a
+  full rebuild of the image. Deleting the project and redeploying does not reset it.
+- The value is a plain string, and `Asia/Makassar` is a real timezone. Nothing throws. It is
+  wrong only against intent, and no assertion holds intent.
+- No test can reach it. The suite reads `phpunit.xml` and never the server's `.env` — the same
+  shape as the SQLite-versus-Postgres outage above, and the second environment-only defect
+  found here in one week.
+
+So when a timestamp looks an hour off, read the server's `.env` before reading `config/app.php`.
+
+Correcting it means a `-1 hour` shift across every stored timestamp, by hand, for the reason two
+paragraphs up. That is cheapest now: production's database was recreated on 2026-08-29 and its
+earliest row is `13:38` that same day, so the shift is uniform — there are no older WIB rows
+mixed in that would have to be told apart first. The cost grows with every row added.
 
 **Carbon does not follow `app.locale`.** Laravel dispatches `LocaleUpdated` but ships no
 listener for it, so `AppServiceProvider::setCarbonLocale()` calls `Carbon::setLocale()`
@@ -492,6 +518,13 @@ fresh database will come up missing them.
 `logOnlyDirty()`, `dontLogEmptyChanges()`, log name `user`. The allowlist is deliberate — the
 table holds password hashes and remember tokens, and `logAll()` cannot stay safe as columns are
 added.
+
+Its cost is that `email_verified_at` sits outside the list, and `dontLogEmptyChanges()` then
+drops the record altogether: verifying a user changes that one column, the allowlist logs none
+of it, and the write leaves no `activity_log` row at all. There is no UI for it either —
+`UserForm` has no such field, `UserInfolist` only displays it — so it is done from tinker, which
+records no causer. If verifying users becomes routine, add the column to the allowlist *before*
+adding an action to do it from; an unaudited convenience is the harder thing to take back.
 
 **Two-factor changes are audited separately too**, and for the opposite reason: the column is
 right there, but its value is the secret itself. `User::booted()` watches whether it changed
