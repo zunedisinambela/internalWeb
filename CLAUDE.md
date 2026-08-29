@@ -1,6 +1,14 @@
 # internalWeb
 
-Internal admin web app. Laravel 13 + Filament v5 panel. PHP 8.3+ (dev runs 8.4).
+Internal admin web app. Laravel 13 + Filament v5 panel. PHP 8.4+.
+
+The pin was `^8.3` until it was corrected: `composer.lock` has all along held
+eighteen packages requiring `>= 8.4.1` — Symfony 8 and `spatie/laravel-activitylog ^8.4`
+among them — because Composer resolves against the PHP actually running, not against
+the constraint in `composer.json`. That gap is invisible locally and fatal in a
+container: on a `php:8.3` image the constraint says the image is fine and
+`composer install` then refuses every package that disagrees, naming a package rather
+than the PHP version.
 
 ## Commands
 
@@ -51,8 +59,12 @@ php artisan cache:clear            # last resort for a stuck navigation badge �
   `App\Models\Sale` for a transfer receipt and a courier resi under one collection each, and
   `App\Models\FreeItemRedemption` for the resi of a free item handed over. All on
   the private `local` disk.
-  v11, not v12: spatie backported `illuminate ^13` into the v11 line, while v12 is unreleased
-  and requires `php ^8.4` against this project's `^8.3` pin. See Media.
+  v11, not v12: spatie backported `illuminate ^13` into the v11 line, and
+  `filament/spatie-laravel-media-library-plugin` pins medialibrary to `^11.0` — so the
+  plugin is what holds it there. The second half of this reason used to be v12's
+  `php ^8.4` against this project's `^8.3`, and that half is gone: the pin is `^8.4`
+  now (see the top of this file). Re-check the plugin before assuming v12 is reachable.
+  See Media.
 - **filament/spatie-laravel-media-library-plugin v5.7** — the upload field, image column and
   image entry that put medialibrary into the panel. A separate package from Filament, and it
   pins medialibrary to `^11.0`. See Media.
@@ -91,8 +103,38 @@ php artisan cache:clear            # last resort for a stuck navigation badge �
   the suite runs `QUEUE_CONNECTION=sync`, so there is no second process for the lock to be
   shared with, and a cache that dies with the test is what keeps one test's cached balance out
   of the next one. `PanelCacheTest` exercises the caching within a single test for that reason.
-- **Database is SQLite** (`database/database.sqlite`), gitignored via `database/.gitignore`.
-  Tests run against `:memory:` (see `phpunit.xml`), so they never touch the dev database.
+- **Development is SQLite, production is Postgres, and the suite cannot see the
+  difference.** `database/database.sqlite` is gitignored via `database/.gitignore`; tests
+  run against `:memory:` (see `phpunit.xml`), so they never touch the dev database — and
+  never touch the driver production runs on either. A green suite is therefore not
+  evidence that a query works, only that it works on SQLite.
+
+  This has already cost one outage rather than being a theoretical risk. Filament's
+  topbar counts unread notifications with `where('data->format', 'filament')`, which the
+  Postgres grammar compiles to `"data"->>'format'` — an operator that exists for `json`
+  and `jsonb` and not for `text`. Laravel's stock notifications migration declares that
+  column as `text`, so **every authenticated page returned a 500 in production** while
+  the whole suite stayed green. `/login` stayed up, because the topbar is not rendered on it,
+  which is what made it look like a permissions problem rather than a driver one.
+  `2026_08_29_140000_use_jsonb_for_notification_data` is the fix.
+
+  Three rules follow, and the last two are the ones easy to skip:
+
+  - **A column queried through a `->` path must be `json`, never `text`**, however
+    Laravel's own published migration writes it.
+  - **A migration carrying raw SQL guards on the driver** —
+    `Schema::getConnection()->getDriverName() !== 'pgsql'` and return. The jsonb migration
+    is the worked example, and without that guard it would break `migrate` on every SQLite
+    machine including CI.
+  - **A driver-specific fix cannot be proven by the suite.** Say so in the migration's
+    docblock and verify it against the deployed database by hand, or the next reader
+    assumes a green run covered it.
+- **In production the app runs behind a proxy** — Caddy terminates TLS on the host and
+  forwards to nginx and php-fpm in containers. `bootstrap/app.php` sets
+  `trustProxies(at: '*')` for it; without that `url()` and `route()` emit `http://` on an
+  `https://` page, assets trip mixed-content blocking and the `secure` session cookie is
+  never sent back. Nothing fails loudly — the app renders and the login silently never
+  sticks.
 - Frontend: Vite 8 + Tailwind 4. Filament ships its own compiled CSS/JS and does not go
   through the app's Vite build — so `resources/css/app.css` styles nothing in the panel, which
   is the whole app. Panel CSS and JS arrive through render hooks instead; see Panel CSS and JS
