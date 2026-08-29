@@ -6,7 +6,7 @@
     "keywords": ["laravel", "framework"],
     "license": "MIT",
     "require": {
-        "php": "^8.3",
+        "php": "^8.4",
         "barryvdh/laravel-dompdf": "^3.1.2",
         "bezhansalleh/filament-shield": "^4.0",
         "binafy/laravel-user-monitoring": "^1.2",
