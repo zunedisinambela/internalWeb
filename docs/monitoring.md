@@ -65,6 +65,35 @@ most: it serves raw log contents, so a read there is exactly what the visits tab
 hold. `UserMonitoringTest::test_a_page_view_outside_the_panel_is_recorded` is the one test
 standing on it — every other visit test now goes through the panel stack and would stay green.
 
+### Who a visit is attributed to
+
+`user_id` is `UserUtils::getUserId()` read **before** the request is handled — `RecordVisit`
+inserts its row, then runs the pipeline. The row is an insert and is never returned to, so the
+attribution means "who was signed in when this arrived", not "who this turned out to be".
+
+That makes `/login` a guest row permanently. It is the one page a signed-out user can reach, so
+`user_id` is null there by definition, and the Kunjungan screen renders null as *Tamu*
+(`VisitsTable`, `->placeholder('Tamu')` — the placeholder is deliberate, since a null here is
+expected data rather than a missing join). A successful sign-in five seconds later does not
+backfill it.
+
+Nor does the credential submission show up anywhere: Filament's login is a Livewire component,
+and `PageViewsOnly` rejects Livewire by header. A whole sign-in therefore leaves exactly two
+traces in this table — one *Tamu* hit on `/login`, and then the first authenticated row after
+the redirect. A run of *Tamu* hits with no authenticated row following is a failed attempt, and
+that shape is the reason `guest_mode` is `true`: dropping null rows would erase the record of
+both a person who forgot their password and a probe.
+
+**"Who signed in, and when" is the other table.** `authentications_monitoring` is written by
+`LaravelUserMonitoringEventServiceProvider`, which listens for `Login` and `Logout` — events
+that fire *after* authentication, so the user is known. Each row carries an `action_type`, so a
+sign-out is not misread as a sign-in; a logout is what puts the user back on `/login`, and
+without that column a burst of guest `/login` rows following a logout looks identical to a
+burst preceding a failed login.
+
+Kunjungan answers *what was requested*. Riwayat Masuk answers *who it was*. Asking the first
+screen the second question returns *Tamu* every time, and it is not wrong when it does.
+
 ### Retention
 
 `delete_days` cannot live in config, because a screen cannot write to a config file:

@@ -479,6 +479,13 @@ there is no public page left. That is deliberate on the recording side too: `Rec
 in the panel's *base* stack rather than its `authMiddleware()`, so signed-out hits are logged.
 The visit tests in `UserMonitoringTest` are written against `/login` for this reason.
 
+**A visit is attributed to whoever was signed in when the request arrived**, because the insert
+runs before `$next($request)` and the row is never revisited. So every `/login` row reads *Tamu*
+and always will: a sign-in seconds later does not backfill the page that led to it. Reading
+`/visits` to answer "who signed in" therefore returns a guest every time — that question belongs
+to `/authentications`, which the package writes from the `Login` / `Logout` events, after
+authentication, with an `action_type` separating the two. Full note in `docs/monitoring.md`.
+
 **Indonesian has no plural inflection.** Filament pluralises a resource's `$modelLabel` unless
 `$pluralModelLabel` is set too, which produces "Penggunas". Every resource sets both to the
 same word.
