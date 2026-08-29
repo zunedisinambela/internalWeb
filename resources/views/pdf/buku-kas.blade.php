@@ -43,18 +43,54 @@
     ['label' => 'Saldo akhir', 'nilai' => \App\Support\Rupiah::format($totals['balance']), 'kelas' => $totals['balance'] < 0 ? 'minus' : ''],
 ]])
 
+{{-- Saldo per sumber dana.
+
+     Dikumpulkan App\Reports\CashBook sambil baris dilipat, bukan lewat kueri
+     agregat kedua: sebuah GROUP BY terpisah dijalankan atas himpunan baris
+     yang bisa saja sudah berubah, lalu mencetak rekap yang jumlahnya tidak
+     sama dengan baris-baris di bawahnya.
+
+     Hanya dicetak bila ada lebih dari satu sumber. Dengan satu sumber, setiap
+     angkanya sama persis dengan kartu ringkasan di atas, dan tabel yang hanya
+     mengulang tidak layak menghabiskan tinggi halaman. --}}
+@if (count($sources) > 1)
+    <div class="subjudul">Saldo per sumber dana</div>
+
+    <table class="buku rekap">
+        <thead>
+            <tr>
+                <th style="width: 40%">Sumber</th>
+                <th style="width: 20%" class="angka">Pemasukan</th>
+                <th style="width: 20%" class="angka">Pengeluaran</th>
+                <th style="width: 20%" class="angka">Saldo</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach ($sources as $sumber)
+                <tr>
+                    <td>{{ $sumber['name'] }}</td>
+                    <td class="angka masuk">{{ \App\Support\Rupiah::format($sumber['income']) }}</td>
+                    <td class="angka keluar">{{ \App\Support\Rupiah::format($sumber['expense']) }}</td>
+                    <td class="angka @if ($sumber['balance'] < 0) minus @endif">{{ \App\Support\Rupiah::format($sumber['balance']) }}</td>
+                </tr>
+            @endforeach
+        </tbody>
+    </table>
+@endif
+
 <table class="buku">
     {{-- dompdf mengulang <thead> di setiap halaman, jadi buku yang panjang
          tetap terbaca tanpa harus kembali ke halaman pertama. --}}
     <thead>
         <tr>
-            <th style="width: 13%">Waktu</th>
-            <th style="width: 25%">Keterangan</th>
-            <th style="width: 12%" class="angka">Pemasukan</th>
-            <th style="width: 12%" class="angka">Pengeluaran</th>
-            <th style="width: 12%" class="angka">Saldo</th>
-            <th style="width: 16%">Bukti</th>
-            <th style="width: 10%">Dicatat oleh</th>
+            <th style="width: 12%">Waktu</th>
+            <th style="width: 20%">Keterangan</th>
+            <th style="width: 11%">Sumber</th>
+            <th style="width: 11%" class="angka">Pemasukan</th>
+            <th style="width: 11%" class="angka">Pengeluaran</th>
+            <th style="width: 11%" class="angka">Saldo</th>
+            <th style="width: 15%">Bukti</th>
+            <th style="width: 9%">Dicatat oleh</th>
         </tr>
     </thead>
 
@@ -63,6 +99,11 @@
             <tr>
                 <td class="waktu">{{ $line['transaction']->occurred_at->translatedFormat('d M Y H:i') }}</td>
                 <td>{{ $line['transaction']->description }}</td>
+                {{-- Nama yang sudah dilipat laporan, bukan
+                     $line['transaction']->source?->name: bagaimana baris tanpa
+                     sumber dieja ditentukan sekali di CashBook, supaya kolom
+                     ini dan rekap di atas tidak mengejanya dengan dua cara. --}}
+                <td>{{ $line['source'] }}</td>
                 <td class="angka masuk">{{ \App\Support\Rupiah::format($line['income']) }}</td>
                 <td class="angka keluar">{{ \App\Support\Rupiah::format($line['expense']) }}</td>
                 <td class="angka @if ($line['balance'] < 0) minus @endif">{{ \App\Support\Rupiah::format($line['balance']) }}</td>
@@ -86,7 +127,7 @@
             </tr>
         @empty
             <tr>
-                <td colspan="7" class="kosong">Belum ada transaksi untuk dicetak.</td>
+                <td colspan="8" class="kosong">Belum ada transaksi untuk dicetak.</td>
             </tr>
         @endforelse
     </tbody>
@@ -94,7 +135,7 @@
     @if ($totals['rows'] > 0)
         <tfoot>
             <tr>
-                <td colspan="2">TOTAL</td>
+                <td colspan="3">TOTAL</td>
                 <td class="angka masuk">{{ \App\Support\Rupiah::format($totals['income']) }}</td>
                 <td class="angka keluar">{{ \App\Support\Rupiah::format($totals['expense']) }}</td>
                 <td class="angka @if ($totals['balance'] < 0) minus @endif">{{ \App\Support\Rupiah::format($totals['balance']) }}</td>

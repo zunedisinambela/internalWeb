@@ -6,6 +6,7 @@ use App\Enums\TransactionType;
 use App\Filament\Resources\Transactions\Pages\CreateTransaction;
 use App\Filament\Resources\Transactions\Pages\EditTransaction;
 use App\Filament\Resources\Transactions\Pages\ListTransactions;
+use App\Models\Source;
 use App\Models\Transaction;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -84,12 +85,14 @@ class TransactionResourceTest extends TestCase
     public function test_creating_a_transaction_stores_whole_rupiah_and_stamps_the_author(): void
     {
         $admin = $this->superAdmin();
+        $source = Source::factory()->create(['name' => 'Kas Tunai']);
 
         Livewire::actingAs($admin)
             ->test(CreateTransaction::class)
             ->fillForm([
                 'type' => TransactionType::Expense->value,
                 'amount' => 1_500_000,
+                'source_id' => $source->getKey(),
                 'description' => 'Sewa kantor Agustus',
                 'occurred_at' => '2026-08-14 09:00:00',
             ])
@@ -99,6 +102,7 @@ class TransactionResourceTest extends TestCase
         $transaction = Transaction::sole();
 
         $this->assertSame(TransactionType::Expense, $transaction->type);
+        $this->assertSame($source->getKey(), $transaction->source_id);
         // Integer, not a float: a decimal column on SQLite would come back as
         // 1500000.0 and this assertion is what catches the change.
         $this->assertSame(1_500_000, $transaction->amount);
@@ -135,6 +139,7 @@ class TransactionResourceTest extends TestCase
             ->fillForm([
                 'type' => TransactionType::Expense->value,
                 'amount' => '1.500.000',
+                'source_id' => Source::factory()->create()->getKey(),
                 'description' => 'Sewa kantor Agustus',
                 'occurred_at' => '2026-08-14 09:00:00',
             ])

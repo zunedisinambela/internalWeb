@@ -3,15 +3,20 @@
 namespace App\Filament\Resources\Transactions\Schemas;
 
 use App\Enums\TransactionType;
+use App\Filament\Resources\Sources\Schemas\SourceForm;
+use App\Models\Source;
 use App\Models\Transaction;
 use App\Rules\WholeRupiah;
 use Filament\Forms\Components\DateTimePicker;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\SpatieMediaLibraryFileUpload;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\ToggleButtons;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 
 class TransactionForm
 {
@@ -33,6 +38,45 @@ class TransactionForm
                             ->inline()
                             ->required()
                             ->columnSpanFull(),
+
+                        // Lewat mana uangnya berpindah. Satu daftar untuk
+                        // kedua arah: pemasukan masuk *ke* rekening ini dan
+                        // pengeluaran keluar *dari* rekening ini, dan keduanya
+                        // menyebut baris yang sama — itulah yang membuat saldo
+                        // per rekening bisa dihitung sama sekali.
+                        //
+                        // Wajib di sini meski kolomnya nullable. Yang boleh
+                        // kosong hanya baris yang dicatat sebelum kolom ini
+                        // ada; sejak sekarang jawabannya selalu diketahui saat
+                        // mencatat, dan menawarkan pilihan kosong berarti
+                        // mengundang lubang yang tidak perlu ada.
+                        Select::make('source_id')
+                            ->label('Sumber dana')
+                            ->relationship(
+                                'source',
+                                'name',
+                                // Yang aktif, ditambah yang sedang dipakai
+                                // baris ini walau sudah dinonaktifkan. Tanpa
+                                // bagian kedua, membuka transaksi lama
+                                // menampilkan field kosong dan menekan Simpan
+                                // menghapus sumbernya tanpa pesan apa pun.
+                                modifyQueryUsing: fn (Builder $query, ?Model $record): Builder => $query
+                                    ->selectable($record?->source_id)
+                                    ->orderBy('name'),
+                            )
+                            ->native(false)
+                            ->searchable()
+                            ->preload()
+                            ->required()
+                            ->columnSpanFull()
+                            // Mencatat transaksi tidak boleh terhenti karena
+                            // dompetnya belum terdaftar. Formnya dipinjam utuh
+                            // dari layar Sumber dana, jadi aturan nama unik dan
+                            // teks bantuannya tidak perlu ditulis dua kali.
+                            ->createOptionForm(fn (Schema $schema): Schema => SourceForm::configure($schema))
+                            ->createOptionUsing(fn (array $data): int => Source::create($data)->getKey())
+                            ->createOptionModalHeading('Tambah sumber dana')
+                            ->helperText('Dompet atau rekening yang uangnya bergerak. Belum ada? Tambahkan langsung dari sini.'),
 
                         TextInput::make('amount')
                             ->label('Jumlah')

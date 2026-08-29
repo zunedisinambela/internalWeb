@@ -9,6 +9,7 @@ there to keep them honest.
 |-------|-------|
 | Model | `App\Models\Transaction` — the first `InteractsWithMedia` model here; `MeterReading` and `Sale` followed it |
 | Direction | `App\Enums\TransactionType` — `income` / `expense` |
+| Source | `App\Models\Source` at `/sources` — the wallets and accounts money actually moves through |
 | Amounts | `App\Rules\WholeRupiah` — the only validation on the figure, and the grouped display |
 | Totals | `Resources/Transactions/Widgets/TransactionOverview` |
 | Receipts | media collection `Transaction::RECEIPTS`, private `local` disk |
@@ -91,6 +92,32 @@ column, get filtered on and get asserted in tests; `TransactionType::getLabel()`
 user-facing text. Same rule as the activity log `event` keys, and for the same reason — a
 reworded translation must not become a data migration.
 
+**Every row names the wallet the money moved through, and it is one list for both
+directions.** `transactions.source_id` points at `App\Models\Source` — Kas Tunai, BCA, Dana —
+managed at `/sources`. An income lands *in* a source and an expense leaves *from* one, and both
+name the same row; splitting the list per direction would make a balance per account
+uncomputable, which is the only figure that makes the column worth having.
+
+Five things about it that are cheap to lose:
+
+| Decision | Why |
+|---|---|
+| the column is **nullable**, the form field is **required** | rows recorded before the column existed genuinely have no answer, and filling one in is inventing a financial record. Everything recorded from now on knows it. |
+| the FK is `restrictOnDelete`, not `nullOnDelete` like `user_id` beside it | both refuse a cascade for the same reason, but a lost recorder still leaves an intact transaction, while a lost source deletes the only account of where the money went and nothing else can reconstruct it. `SourceResource::canDelete()` turns that refusal into a missing button rather than a `QueryException` mid-action; the way out is `is_active = false`. |
+| the form Select offers active sources **plus the one this row already uses** | `Source::scopeSelectable()`. A Select builds its options from that query, so a retired source left out renders an empty field on a row that plainly has one — and pressing Simpan writes null with no message at all. `SourceResourceTest::test_a_retired_source_stays_selectable_on_the_row_already_using_it` is what stands between that and a tidy-looking simplification. |
+| the table filter is `->relationship()`, not a list of names | a filter storing a name silently stops matching the day "BCA" is renamed "Bank BCA". It offers **every** source including inactive ones: `selectable()` bounds what may be *recorded*, not what may be *read* back. |
+| names are folded on write and compared case-insensitively on the form | the column is `unique`, but SQLite compares TEXT case-sensitively, so `bca` sits happily beside `BCA` and that account's balance is split in two with nothing wrong on screen. `Source::setNameAttribute()` collapses whitespace; the closure rule in `SourceForm` compares `lower(name)`. |
+
+**A transfer between two accounts is two rows, and the summary cards overstate because of it.**
+Moving money from BCA to Kas Tunai is recorded as an expense from one and an income to the
+other. Each account's balance stays right; "total pemasukan" counts money that came from
+nowhere. That is cheaper than a third `TransactionType` for as long as such moves are rare — and
+if they stop being rare, the answer is `transfer` as a type, not another column on `Source`.
+
+`Source::balance()` also counts from zero rather than from an opening balance. What it reports is
+"what moved through here according to this book", not "what is in the account". Adding an opening
+balance would have the panel assert a figure it has never seen.
+
 **Uploads go through medialibrary, not a plain `FileUpload`.** There is no path column on
 `transactions` — attachments are rows in the `media` table keyed by morph, which is why "more
 than one photo" costs no schema change and no migration. Three components bind to the
@@ -117,7 +144,8 @@ is only ever reached by a deliberate signed request.
 
 | Change | Recorded by |
 |--------|-------------|
-| `type`, `amount`, `description`, `occurred_at` | `LogsActivity`, log name `transaction` |
+| `type`, `amount`, `description`, `source_id`, `occurred_at` | `LogsActivity`, log name `transaction` |
+| a source added, renamed or retired | `LogsActivity` on `Source`, log name `source` |
 | a receipt removed | `AppServiceProvider::registerMediaDeletionLogging()`, event `receipt_deleted` |
 | the book downloaded, as Excel or PDF | `ExportTransactionsAction`, log name `monitoring`, event `transactions_exported`, `format` property |
 | a receipt attached or replaced | **nothing** |
@@ -138,6 +166,18 @@ string, and a column of strings cannot be summed, pivoted or charted, which is m
 spreadsheet is for. So the direction moves into the column layout. The PDF follows the same
 shape rather than the screen's, because two files downloaded seconds apart disagreeing about
 the layout of the same book would be worse than either choice.
+
+**Both carry `Sumber`, and the PDF adds a recap the spreadsheet does not.** The column prints
+the name the report folded — `CashBook::UNKNOWN_SOURCE`, "Tidak diketahui", for a row that has
+none — rather than reading `$transaction->source?->name` at the cell, so the ledger row and the
+recap cannot spell the same absence two ways. Above the table the PDF prints one line per source
+with its own money in, money out and balance; it is accumulated by `fold()` as the rows are
+walked, not fetched with a `GROUP BY`, for the same reason the running balance is — a second
+aggregate query is a second figure free to disagree with the lines printed under it. It is
+omitted entirely when the whole book is one source, where every number in it would repeat the
+summary cards. The spreadsheet gets no recap: a column of names is a pivot table away from the
+same answer, and a second sheet would need `WithMultipleSheets`, which walks the report twice
+and doubles every total.
 
 **They differ from each other in exactly one column: Bukti.** The spreadsheet counts the
 receipts; the PDF prints them. That is not an inconsistency to tidy up — a spreadsheet cell

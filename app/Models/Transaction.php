@@ -43,6 +43,7 @@ class Transaction extends Model implements HasMedia
         'type',
         'amount',
         'description',
+        'source_id',
         'occurred_at',
         'user_id',
     ];
@@ -88,6 +89,21 @@ class Transaction extends Model implements HasMedia
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Dompet atau rekening yang uangnya berpindah lewat sini.
+     *
+     * Nullable meski form mewajibkannya: baris yang dicatat sebelum kolom ini
+     * ada tidak punya jawaban, dan menebaknya berarti mengarang catatan
+     * keuangan. Lihat migrasi create_sources_table untuk kenapa relasinya
+     * restrictOnDelete dan bukan nullOnDelete seperti user() di atas.
+     *
+     * @return BelongsTo<Source, $this>
+     */
+    public function source(): BelongsTo
+    {
+        return $this->belongsTo(Source::class);
     }
 
     /**
@@ -175,7 +191,7 @@ class Transaction extends Model implements HasMedia
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()
-            ->logOnly(['type', 'amount', 'description', 'occurred_at'])
+            ->logOnly(['type', 'amount', 'description', 'source_id', 'occurred_at'])
             ->logOnlyDirty()
             ->dontLogEmptyChanges()
             ->useLogName('transaction');

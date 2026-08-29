@@ -43,11 +43,33 @@ use Maatwebsite\Excel\Concerns\FromQuery;
  */
 class CashBook extends Report
 {
+    /**
+     * Bagaimana baris tanpa sumber dieja, di kolomnya dan di rekapnya.
+     *
+     * Sama dengan placeholder kolomnya di layar. Kolomnya nullable karena baris
+     * yang dicatat sebelum sumber dana ada memang tidak punya jawaban, dan
+     * mencetaknya sebagai sel kosong membuat laporan tampak lupa mengisi
+     * sesuatu.
+     */
+    public const UNKNOWN_SOURCE = 'Tidak diketahui';
+
     private int $balance = 0;
 
     private int $income = 0;
 
     private int $expense = 0;
+
+    /**
+     * Rekap per sumber dana, dikumpulkan sambil baris dilipat.
+     *
+     * Dikunci dengan id sumber — string kosong untuk baris lama yang tidak
+     * punya — dan bukan dengan namanya: dua rekening bisa saja diberi nama yang
+     * hanya beda huruf besar-kecil, dan menggabungkannya di rekap berarti dua
+     * saldo dilaporkan sebagai satu tanpa ada yang salah di layar.
+     *
+     * @var array<string, array{name: string, income: int, expense: int}>
+     */
+    private array $bySource = [];
 
     public function __construct(
         private readonly Builder $query,
@@ -79,6 +101,9 @@ class CashBook extends Report
             // The recorder's name is a column of the output; without this it is
             // a query per row.
             ->with('user')
+            // Namanya dicetak di kolomnya sendiri dan dijumlah di rekap; tanpa
+            // ini keduanya satu kueri per baris.
+            ->with('source')
             // The receipts themselves, for the PDF — the Bukti column prints
             // the photographs rather than how many there are. Constrained to
             // the receipts collection so the relation holds nothing else, which
@@ -108,7 +133,7 @@ class CashBook extends Report
      * transaction that moved nothing.
      *
      * @param  Transaction  $record
-     * @return array{transaction: Transaction, income: int|null, expense: int|null, balance: int, receipts: int}
+     * @return array{transaction: Transaction, income: int|null, expense: int|null, balance: int, receipts: int, source: string}
      */
     public function fold(Model $record): array
     {
@@ -119,6 +144,8 @@ class CashBook extends Report
         $this->income += $income ?? 0;
         $this->expense += $expense ?? 0;
 
+        $source = $this->foldSource($record, $income, $expense);
+
         $this->rowCounted($record->occurred_at);
 
         return [
@@ -127,7 +154,57 @@ class CashBook extends Report
             'expense' => $expense,
             'balance' => $this->balance,
             'receipts' => (int) $record->receipts_count,
+            'source' => $source,
         ];
+    }
+
+    /**
+     * Tambahkan satu baris ke rekap sumbernya, lalu kembalikan nama yang
+     * dicetak di barisnya sendiri.
+     *
+     * Satu tempat untuk kedua hal itu dengan sengaja: kalau kolom di baris dan
+     * label di rekap disusun terpisah, "Tidak diketahui" bisa dieja lain di
+     * salah satunya dan pembacanya akan mengira itu dua hal berbeda.
+     */
+    private function foldSource(Transaction $record, ?int $income, ?int $expense): string
+    {
+        $key = (string) ($record->source_id ?? '');
+        $name = $record->source?->name ?? self::UNKNOWN_SOURCE;
+
+        $this->bySource[$key] ??= ['name' => $name, 'income' => 0, 'expense' => 0];
+        $this->bySource[$key]['income'] += $income ?? 0;
+        $this->bySource[$key]['expense'] += $expense ?? 0;
+
+        return $name;
+    }
+
+    /**
+     * Rekap per sumber, urut nama, dengan saldo tiap sumber sudah dihitung.
+     *
+     * Diurutkan di sini dan bukan di kueri: urutan baris buku kas adalah
+     * kronologis dan tidak boleh diubah demi rekap, jadi rekapnya diurutkan
+     * setelah semua baris dilipat. Yang tanpa sumber selalu terakhir — ia
+     * bukan rekening, jadi menaruhnya di antara nama-nama rekening akan
+     * terbaca seolah-olah ia salah satunya.
+     *
+     * @return array<int, array{name: string, income: int, expense: int, balance: int}>
+     */
+    public function sources(): array
+    {
+        $rows = $this->bySource;
+
+        uasort($rows, static function (array $a, array $b): int {
+            if (($a['name'] === self::UNKNOWN_SOURCE) !== ($b['name'] === self::UNKNOWN_SOURCE)) {
+                return $a['name'] === self::UNKNOWN_SOURCE ? 1 : -1;
+            }
+
+            return strcasecmp($a['name'], $b['name']);
+        });
+
+        return array_values(array_map(
+            static fn (array $row): array => $row + ['balance' => $row['income'] - $row['expense']],
+            $rows,
+        ));
     }
 
     /**
@@ -165,6 +242,7 @@ class CashBook extends Report
         return [
             'lines' => $lines,
             'totals' => $this->totals(),
+            'sources' => $this->sources(),
             'period' => $this->period(),
         ];
     }
@@ -196,5 +274,6 @@ class CashBook extends Report
         $this->balance = 0;
         $this->income = 0;
         $this->expense = 0;
+        $this->bySource = [];
     }
 }

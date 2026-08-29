@@ -73,6 +73,19 @@ table.buku {
     border-collapse: collapse;
 }
 
+/* Rekap kecil di atas buku utama — dipakai buku kas untuk saldo per sumber
+   dana. Memakai ulang gaya table.buku alih-alih menyalinnya: yang berbeda
+   hanya jaraknya ke tabel di bawahnya. */
+.subjudul {
+    font-size: 9.5pt;
+    font-weight: bold;
+    margin: 0 0 4pt 0;
+}
+
+table.rekap {
+    margin-bottom: 12pt;
+}
+
 table.buku thead th {
     background-color: #f3f4f6;
     border-bottom: 1pt solid #9ca3af;

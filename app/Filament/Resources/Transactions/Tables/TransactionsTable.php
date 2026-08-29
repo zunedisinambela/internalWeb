@@ -47,6 +47,18 @@ class TransactionsTable
                     ->wrap()
                     ->limit(60),
 
+                // Placeholder, bukan string kosong: kolomnya nullable karena
+                // baris yang dicatat sebelum sumber dana ada memang tidak punya
+                // jawaban, dan sel kosong terbaca sebagai kelalaian tampilan
+                // ketimbang sebagai catatan lama.
+                TextColumn::make('source.name')
+                    ->label('Sumber')
+                    ->badge()
+                    ->color('gray')
+                    ->placeholder('Tidak diketahui')
+                    ->searchable()
+                    ->sortable(),
+
                 TextColumn::make('amount')
                     ->label('Jumlah')
                     ->alignEnd()
@@ -94,6 +106,21 @@ class TransactionsTable
                 SelectFilter::make('type')
                     ->label('Jenis')
                     ->options(TransactionType::class),
+
+                // relationship(), bukan daftar options: nama sumber bisa
+                // berubah, dan filter yang menyimpan nama akan diam-diam
+                // berhenti cocok begitu "BCA" diubah jadi "Bank BCA". Yang
+                // disimpan adalah id-nya.
+                //
+                // Semua sumber ikut ditawarkan, termasuk yang tidak aktif —
+                // yang dibatasi Source::scopeSelectable() adalah apa yang boleh
+                // *dicatat* mulai sekarang, bukan apa yang boleh *dibaca* dari
+                // catatan lama.
+                SelectFilter::make('source')
+                    ->label('Sumber')
+                    ->relationship('source', 'name')
+                    ->searchable()
+                    ->preload(),
 
                 Filter::make('occurred_at')
                     ->label('Rentang tanggal')

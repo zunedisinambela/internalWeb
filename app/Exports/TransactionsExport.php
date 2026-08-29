@@ -39,6 +39,7 @@ class TransactionsExport extends ReportExport
         return [
             'Waktu',
             'Keterangan',
+            'Sumber',
             'Pemasukan',
             'Pengeluaran',
             'Saldo',
@@ -48,7 +49,7 @@ class TransactionsExport extends ReportExport
     }
 
     /**
-     * @param  array{transaction: Transaction, income: int|null, expense: int|null, balance: int, receipts: int}  $line
+     * @param  array{transaction: Transaction, income: int|null, expense: int|null, balance: int, receipts: int, source: string}  $line
      * @return array<int, mixed>
      */
     protected function cells(array $line): array
@@ -61,6 +62,10 @@ class TransactionsExport extends ReportExport
             // already WIB — see Locale and timezone — so nothing is converted.
             ExcelDate::dateTimeToExcel($transaction->occurred_at),
             $transaction->description,
+            // The name as it was folded, not $transaction->source?->name: the
+            // report decides how a row with no source is spelled, and a second
+            // spelling here would read as a second kind of row.
+            $line['source'],
             // null, not 0: an empty cell reads as "not this side of the book",
             // where Rp 0 reads as a transaction that moved nothing. Preserving
             // that distinction through to the file is what
@@ -83,6 +88,7 @@ class TransactionsExport extends ReportExport
         return [
             'TOTAL',
             null,
+            null,
             $totals['income'],
             $totals['expense'],
             $totals['balance'],
@@ -96,7 +102,7 @@ class TransactionsExport extends ReportExport
      */
     protected function moneyColumns(): array
     {
-        return ['C', 'D', 'E'];
+        return ['D', 'E', 'F'];
     }
 
     /**
@@ -112,6 +118,6 @@ class TransactionsExport extends ReportExport
      */
     protected function centeredColumns(): array
     {
-        return ['F'];
+        return ['G'];
     }
 }

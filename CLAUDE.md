@@ -165,7 +165,7 @@ expensive to undo.
 | File | Covers | True even if you never open it |
 |------|--------|--------------------------------|
 | `docs/access-control.md` | roles, the panel gate, the log-viewer gate, sign-in identifiers, two-factor | Roles are the only source of truth — there is no `is_admin` column, and any role opens the panel. Either the email or the username signs a user in. |
-| `docs/keuangan.md` | the cash book at `/transactions`, receipts, the queued Excel/PDF export | Amounts are whole rupiah in an integer column, never a decimal. The export renders on the queue, so no worker means no file **and no error**. Its Bukti column prints the receipt itself, and prints the `thumb` conversion rather than the original — the original still carries the phone's EXIF. |
+| `docs/keuangan.md` | the cash book at `/transactions`, its sumber dana at `/sources`, receipts, the queued Excel/PDF export | Amounts are whole rupiah in an integer column, never a decimal. Every row names the wallet the money moved through, and that FK is `restrictOnDelete` — a source in use is retired, never deleted. The export renders on the queue, so no worker means no file **and no error**. Its Bukti column prints the receipt itself, and prints the `thumb` conversion rather than the original — the original still carries the phone's EXIF. |
 | `docs/listrik-kost.md` | meter readings at `/meter-readings`, their photographs, the amount paid, the export | One screen, one meter. The panel **records** a bill, it does not compute one: `total_amount` is typed off the bill and `usage_kwh` is derived from the two meter figures, with nothing multiplying the one by the other. Rooms, a versioned tariff table and a rate per kWh all used to sit here and were dropped in turn; the file records what each of those migrations destroyed. |
 | `docs/oriflame.md` | sales and customers, the three figures, the item count, the bonus and its handovers, the two exports | The three prices are totals for the whole order; `quantity` counts items and reprices nothing. Ongkir is the consultant's cost, not a line on the customer's bill. The free item is counted **per customer across every order**, never per sale — `Sale::$free_quantity` still exists and has no UI. What was *earned* is derived from the orders; what was *collected* is a recorded row, and the two must not be merged. |
 | `docs/monitoring.md` | `/visits`, `/authentications`, `/activities`, retention at `/monitoring` | The package's own six routes are unauthenticated and are disabled by an empty `routes/user-monitoring.php`. Deleting that file brings them all back. |
@@ -325,6 +325,32 @@ which is why the two coexist on `Transaction`, `MeterReading`, `Sale` and
 `FreeItemRedemption` — all four stamp or watch something from `booted()` while medialibrary
 registers its own hooks alongside.
 
+**A `unique` column is not a unique value on SQLite.** `=` on a TEXT column is case sensitive
+there, and Laravel's `unique` rule compares with `=` — so `bca` is inserted happily beside `BCA`
+and the index raises nothing. On a name that something is *grouped by*, that is not a cosmetic
+duplicate: `Source` is the worked example, where the two rows split one account's balance in
+half and neither figure is wrong on its own. Two halves of the fix, and both are needed:
+`Source::setNameAttribute()` collapses whitespace on write, because `"BCA "` clears the index
+too and is invisible on screen; the form pairs it with a closure rule comparing
+`lower(name)`, since `Rule::unique()` cannot be talked into a case-insensitive comparison
+without a `whereRaw` that replaces its own `where` rather than adding to it. The same trap is
+what folds usernames to lowercase — see Seeded credentials.
+
+**A column may be nullable while its form field is required, and the tests are where that
+splits.** `transactions.source_id` is the worked example: rows recorded before the column
+existed have no answer and backfilling one would be inventing a financial record, so the column
+allows null while `TransactionForm` refuses it from everything recorded since. Two consequences.
+A **factory follows the column, not the form** — `TransactionFactory` leaves `source_id` null —
+so any test that presses `save()` on a form it did not fill now fails validation on a field it
+never mentioned, and the failure reads as whatever that test was actually about.
+`EditRedirectTest::savable()` is where that is absorbed, and it is deliberately a helper with a
+comment rather than a factory default: making the factory attach a source would put a `sources`
+row behind every transaction in the suite and quietly change what the per-source recap in
+`TransactionExportTest` is asserting. And **the null case still has to be rendered** — a screen,
+a spreadsheet cell and a PDF cell each need to say "Tidak diketahui" rather than leave a blank,
+which reads as a column that was forgotten. `CashBook::UNKNOWN_SOURCE` is that string, spelled
+once so the ledger row and the recap under it cannot disagree.
+
 **`permission.events_enabled` is set to `true` on purpose.** It ships as `false`. Role grants
 and revocations are audited through those events, so turning it off silently removes the
 privilege-escalation trail.
@@ -435,12 +461,12 @@ with the role names in `properties`. Since a role is what grants panel access, t
 privilege-escalation trail — if it stops working the log looks healthy while missing the most
 important events.
 
-**Six models carry the trait**, each with its own log name and its own explicit allowlist:
+**Seven models carry the trait**, each with its own log name and its own explicit allowlist:
 
 | Model | Log name | Feature |
 |-------|----------|---------|
 | `User` | `user` | Access control |
-| `Transaction` | `transaction` | Keuangan |
+| `Transaction`, `Source` | `transaction`, `source` | Keuangan |
 | `MeterReading` | `meter_reading` | Listrik kost |
 | `Customer`, `Sale`, `FreeItemRedemption` | `customer`, `sale`, `free_item_redemption` | Oriflame |
 
@@ -473,6 +499,8 @@ two-factor changes), `transaction`
 resi photograph removed — kept out of `sale` and `customer` because "when did somebody collect a
 free item" is a question read past both of them otherwise) and `customer` (the Oriflame feature
 — see Oriflame),
+`source` (wallets and accounts added, renamed or retired — kept out of `transaction` because
+"who changed what BCA is called" is a question read past every cash book row otherwise),
 and `monitoring`
 (deletions, prunes, and every export from the four feature list screens — a read that leaves the
 panel is recorded here rather than under the feature's own log name, because it is an operation
@@ -542,6 +570,14 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   a check on `->visible()` alone leaves the bulk path open. `UserResource::canDelete()` refuses
   self-deletion this way. To defer to a Shield policy instead, leave the method unoverridden —
   do not return `true`.
+  **The same method is also where a database constraint becomes a missing button rather than an
+  error page.** `SourceResource::canDelete()` is the worked example: the foreign key on
+  `transactions.source_id` is `restrictOnDelete`, so deleting a source in use is refused by
+  SQLite — as a `QueryException` thrown mid-action, which is a stack trace where a user expected
+  a row to disappear. Asking the same question in `canDelete()` turns that into an action that
+  is simply not offered. Note it needs the count to already be loaded (`withCount` in
+  `getEloquentQuery()`) or it is a query per row, and the bulk path calls it once per selected
+  record — which is exactly why the check cannot live on the button.
 - `DeleteBulkAction::make()->fetchSelectedRecords()` whenever anything hangs off the `deleted`
   model event. The default is currently `true`, but relying on a vendor default for an audit
   trail is how one goes missing on an upgrade.
@@ -708,6 +744,19 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   screen's guard from cancelling another's export over rows that happen to share ids — which is
   the whole reason `ExportCashBook`, `ExportSales`, `ExportCustomers` and `ExportMeterReadings`
   are four classes carrying one line each rather than one job taking a report argument.
+- **A `Select` built from a relationship silently drops the value it is showing if the option is
+  filtered out.** `->relationship(..., modifyQueryUsing:)` builds the options *and* resolves the
+  current state's label from the same query, so a filter that excludes the row this record
+  already points at renders an empty field on a record that plainly has one — and the ordinary
+  Simpan then writes null to the column, with no validation error, because an empty select is a
+  legitimate submission. `TransactionForm`'s sumber dana field is the worked example: the filter
+  is "active", the record's own source is added back by `Source::scopeSelectable($keep)`, and
+  `SourceResourceTest::test_a_retired_source_stays_selectable_on_the_row_already_using_it` is
+  what stands between that clause and a simplification that reviews cleanly. `$record` is
+  injectable into that closure by name, and is null on a create form.
+  The general shape: any predicate narrowing a relationship's options is about what may be
+  *chosen from now on*, never about what may be *read back*. The table filter on the same column
+  is the other side of it and deliberately offers every source, retired ones included.
 - **A hidden field is not saved.** `->hidden()` / `->visible(false)` makes `isDehydrated()`
   return false, and the component's state path is stripped from the payload — so a field hidden
   to tidy a form silently stops writing its column. Pair it with `->dehydratedWhenHidden()`
@@ -761,6 +810,11 @@ Descriptions are Indonesian; `event` keys are not — see Locale and timezone.
   reading form, and it keeps the group anyway — a lone ungrouped resource sits above every
   grouped one, which reads as more important rather than as unclassified. A resource with no
   group sits above the grouped ones.
+  **Keuangan is the one place that leans on that deliberately.** `TransactionResource` (sort 10)
+  and `SourceResource` (sort 15) are both ungrouped, so they sit above every group in the order
+  their sorts give — the book that is worked in daily, then the list of wallets it draws on. A
+  `Keuangan` group around the pair was rejected: `TransactionResource::$navigationLabel` is
+  already `Keuangan`, so the sidebar would read "Keuangan › Keuangan".
 - Before deploying run `php artisan filament:optimize` — caches component discovery and Blade
   icons. Without it every request pays a directory scan. Re-run `filament:optimize-clear` after
   editing the panel provider, or the cached component list masks your change.
@@ -835,6 +889,13 @@ to break: the slug is derived from the model name, so renaming the resource leav
 nothing. `SaleResourceTest::test_the_sales_list_carries_the_class_its_table_floor_is_keyed_on`
 asserts the class and the rule against one rendered page. The customer list is left at the
 default — four columns visible, and a floor there would add a swipe to a table that fits.
+
+The cash book is the one to watch next. It carries six visible columns since Sumber was added —
+Waktu, Jenis, Keterangan, Sumber, Jumlah, Bukti — against the sales list's seven, and is still
+on the 48rem default. It gets away with it because only one of its columns is a rupiah figure
+that must not wrap, while Keterangan is `->wrap()`ed on purpose and Bukti is thumbnails that
+shrink; a seventh column, or a second money column, is the point at which it needs its own
+`.fi-resource-transactions` floor.
 
 The complementary lever is `->visibleFrom('lg')` on low-value columns, which shortens the
 swipe. Note it is **not** `toggleable()` — a column hidden that way cannot be brought back from

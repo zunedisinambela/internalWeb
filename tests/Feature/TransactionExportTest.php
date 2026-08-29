@@ -7,6 +7,7 @@ use App\Exports\TransactionsExport;
 use App\Filament\Resources\Transactions\Pages\ListTransactions;
 use App\Filament\Resources\Transactions\TransactionResource;
 use App\Jobs\ExportCashBook;
+use App\Models\Source;
 use App\Models\Transaction;
 use App\Reports\CashBook;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -405,11 +406,7 @@ class TransactionExportTest extends TestCase
 
         $book = new CashBook(Transaction::query());
 
-        $html = view('pdf.buku-kas', [
-            'lines' => $book->lines(),
-            'totals' => $book->totals(),
-            'period' => $book->period(),
-        ])->render();
+        $html = view($book->view(), $book->viewData())->render();
 
         $this->assertStringContainsString('&lt;b&gt;tebal&lt;/b&gt;', $html);
         $this->assertStringNotContainsString('<b>tebal</b>', $html);
@@ -429,11 +426,7 @@ class TransactionExportTest extends TestCase
 
         $book = new CashBook(Transaction::query());
 
-        $html = view('pdf.buku-kas', [
-            'lines' => $book->lines(),
-            'totals' => $book->totals(),
-            'period' => $book->period(),
-        ])->render();
+        $html = view($book->view(), $book->viewData())->render();
 
         $this->assertStringContainsString('-Rp 1.830.000', $html);
         $this->assertStringNotContainsString('Rp -1.830.000', $html);
@@ -449,10 +442,10 @@ class TransactionExportTest extends TestCase
 
         $sheet = $this->export();
 
-        // A .. G = Waktu, Keterangan, Pemasukan, Pengeluaran, Saldo, Bukti,
-        // Dicatat oleh.
+        // A .. H = Waktu, Keterangan, Sumber, Pemasukan, Pengeluaran, Saldo,
+        // Bukti, Dicatat oleh.
         $this->assertSame(
-            ['Waktu', 'Keterangan', 'Pemasukan', 'Pengeluaran', 'Saldo', 'Bukti', 'Dicatat oleh'],
+            ['Waktu', 'Keterangan', 'Sumber', 'Pemasukan', 'Pengeluaran', 'Saldo', 'Bukti', 'Dicatat oleh'],
             $this->row($sheet, 1),
         );
 
@@ -513,12 +506,12 @@ class TransactionExportTest extends TestCase
 
         $sheet = $this->export();
 
-        $this->assertIsInt($sheet->getCell('C2')->getValue());
-        $this->assertIsInt($sheet->getCell('E2')->getValue());
+        $this->assertIsInt($sheet->getCell('D2')->getValue());
+        $this->assertIsInt($sheet->getCell('F2')->getValue());
 
         // Displayed as rupiah by the cell's number format, so the figure stays
         // numeric while still reading as money.
-        $this->assertSame('"Rp" #,##0', $sheet->getStyle('C2')->getNumberFormat()->getFormatCode());
+        $this->assertSame('"Rp" #,##0', $sheet->getStyle('D2')->getNumberFormat()->getFormatCode());
     }
 
     /**
@@ -554,7 +547,7 @@ class TransactionExportTest extends TestCase
 
         $sheet = $this->export();
 
-        $this->assertSame(1, $sheet->getCell('F2')->getValue());
+        $this->assertSame(1, $sheet->getCell('G2')->getValue());
     }
 
     /**
@@ -577,10 +570,123 @@ class TransactionExportTest extends TestCase
         $sheet = $this->export();
 
         // No receipts: a real zero.
-        $this->assertSame(0, $sheet->getCell('F2')->getValue());
+        $this->assertSame(0, $sheet->getCell('G2')->getValue());
 
         // Not an expense: genuinely not applicable, so the cell stays empty.
-        $this->assertNull($sheet->getCell('D2')->getValue());
+        $this->assertNull($sheet->getCell('E2')->getValue());
+    }
+
+    /**
+     * Sumbernya ikut ke dalam berkas, dan baris yang tidak punya mengatakannya
+     * dengan kata — bukan dengan sel kosong.
+     *
+     * Kolomnya nullable karena baris yang dicatat sebelum sumber dana ada
+     * memang tidak punya jawaban. Di layar itu placeholder; di dalam berkas
+     * yang keluar dari panel, sel kosong terbaca sebagai kolom yang lupa
+     * diisi, dan pembacanya tidak punya cara membedakan keduanya.
+     */
+    public function test_the_source_reaches_the_spreadsheet_and_a_row_without_one_says_so(): void
+    {
+        $bca = Source::factory()->create(['name' => 'BCA']);
+
+        Transaction::factory()->income(1_500_000)->for($bca, 'source')->create([
+            'occurred_at' => '2026-08-01 09:00:00',
+            'description' => 'Setoran awal',
+        ]);
+
+        Transaction::factory()->expense(250_000)->create([
+            'occurred_at' => '2026-08-02 11:30:00',
+            'description' => 'Beli ATK',
+        ]);
+
+        $sheet = $this->export();
+
+        $this->assertSame('BCA', $sheet->getCell('C2')->getValue());
+        $this->assertSame(CashBook::UNKNOWN_SOURCE, $sheet->getCell('C3')->getValue());
+
+        // Baris TOTAL tidak menjumlah nama, jadi selnya kosong — dan itu harus
+        // tetap kosong ketimbang mewarisi nama terakhir.
+        $this->assertNull($sheet->getCell('C4')->getValue());
+    }
+
+    /**
+     * Rekap per sumber dikumpulkan sambil baris dilipat, bukan lewat kueri
+     * agregat kedua — jadi yang diuji di sini adalah bahwa jumlahnya persis
+     * sama dengan baris-baris yang benar-benar tercetak.
+     */
+    public function test_the_recap_carries_a_balance_for_every_source(): void
+    {
+        $bca = Source::factory()->create(['name' => 'BCA']);
+        $kas = Source::factory()->create(['name' => 'Kas Tunai']);
+
+        Transaction::factory()->income(1_500_000)->for($bca, 'source')->create(['occurred_at' => '2026-08-01 09:00:00']);
+        Transaction::factory()->expense(250_000)->for($bca, 'source')->create(['occurred_at' => '2026-08-02 09:00:00']);
+        Transaction::factory()->expense(400_000)->for($kas, 'source')->create(['occurred_at' => '2026-08-03 09:00:00']);
+
+        $book = new CashBook(Transaction::query());
+        $book->lines();
+
+        $this->assertSame(
+            [
+                ['name' => 'BCA', 'income' => 1_500_000, 'expense' => 250_000, 'balance' => 1_250_000],
+                ['name' => 'Kas Tunai', 'income' => 0, 'expense' => 400_000, 'balance' => -400_000],
+            ],
+            $book->sources(),
+        );
+
+        // Dan sampai ke halamannya, dengan tanda minus di depan "Rp" seperti
+        // seluruh angka lain di laporan ini.
+        $html = view($book->view(), $book->viewData())->render();
+
+        $this->assertStringContainsString('Saldo per sumber dana', $html);
+        $this->assertStringContainsString('-Rp 400.000', $html);
+    }
+
+    /**
+     * Baris tanpa sumber selalu di urutan terakhir.
+     *
+     * Ia bukan rekening, jadi menaruhnya di antara nama-nama rekening akan
+     * terbaca seolah-olah ia salah satunya — dan urutan abjad akan melakukan
+     * persis itu, karena "Tidak diketahui" jatuh di tengah.
+     */
+    public function test_the_recap_puts_rows_without_a_source_last(): void
+    {
+        Transaction::factory()->income(100_000)->for(Source::factory()->create(['name' => 'Zenith']), 'source')
+            ->create(['occurred_at' => '2026-08-01 09:00:00']);
+
+        Transaction::factory()->income(200_000)->create(['occurred_at' => '2026-08-02 09:00:00']);
+
+        Transaction::factory()->income(300_000)->for(Source::factory()->create(['name' => 'Alfa']), 'source')
+            ->create(['occurred_at' => '2026-08-03 09:00:00']);
+
+        $book = new CashBook(Transaction::query());
+        $book->lines();
+
+        $this->assertSame(
+            ['Alfa', 'Zenith', CashBook::UNKNOWN_SOURCE],
+            array_column($book->sources(), 'name'),
+        );
+    }
+
+    /**
+     * Satu sumber berarti tidak ada rekap.
+     *
+     * Setiap angkanya akan sama persis dengan kartu ringkasan di atasnya, dan
+     * tabel yang hanya mengulang tetap memakan tinggi halaman — pada buku
+     * sepanjang setahun itu satu halaman penuh yang tidak mengatakan apa pun.
+     */
+    public function test_the_recap_is_omitted_when_the_book_has_only_one_source(): void
+    {
+        $bca = Source::factory()->create(['name' => 'BCA']);
+
+        Transaction::factory()->income(1_500_000)->for($bca, 'source')->create(['occurred_at' => '2026-08-01 09:00:00']);
+        Transaction::factory()->expense(250_000)->for($bca, 'source')->create(['occurred_at' => '2026-08-02 09:00:00']);
+
+        $book = new CashBook(Transaction::query());
+
+        $html = view($book->view(), $book->viewData())->render();
+
+        $this->assertStringNotContainsString('Saldo per sumber dana', $html);
     }
 
     /**
@@ -632,11 +738,14 @@ class TransactionExportTest extends TestCase
     {
         $book = new CashBook($query ?? Transaction::query());
 
-        return Pdf::loadView('pdf.buku-kas', [
-            'lines' => $book->lines(),
-            'totals' => $book->totals(),
-            'period' => $book->period(),
-        ])->setPaper('a4', 'landscape')->output();
+        // viewData(), not a hand-built array. The template reads whatever the
+        // report hands it, so a test that assembles its own set of keys is
+        // testing a document the job never renders — the missing key surfaces
+        // as an undefined variable in Blade rather than as a failed assertion
+        // about the report.
+        return Pdf::loadView($book->view(), $book->viewData())
+            ->setPaper('a4', 'landscape')
+            ->output();
     }
 
     /**
@@ -648,9 +757,9 @@ class TransactionExportTest extends TestCase
     {
         return [
             $sheet->getCell("B{$row}")->getValue() ?? $sheet->getCell("A{$row}")->getValue(),
-            $sheet->getCell("C{$row}")->getValue(),
             $sheet->getCell("D{$row}")->getValue(),
             $sheet->getCell("E{$row}")->getValue(),
+            $sheet->getCell("F{$row}")->getValue(),
         ];
     }
 
@@ -661,7 +770,7 @@ class TransactionExportTest extends TestCase
     {
         return array_map(
             fn (string $column): mixed => $sheet->getCell("{$column}{$row}")->getValue(),
-            ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
+            ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
         );
     }
 }

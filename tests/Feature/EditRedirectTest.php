@@ -14,7 +14,9 @@ use App\Filament\Resources\Users\Pages\EditUser;
 use App\Models\Customer;
 use App\Models\MeterReading;
 use App\Models\Sale;
+use App\Models\Source;
 use App\Models\Transaction;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -54,7 +56,7 @@ class EditRedirectTest extends TestCase
     #[DataProvider('editScreens')]
     public function test_saving_an_edit_returns_to_the_list(string $page, string $resource, string $model, string $field): void
     {
-        $record = $model::factory()->create();
+        $record = $this->savable($model);
 
         Livewire::actingAs($this->superAdmin())
             ->test($page, ['record' => $record->getKey()])
@@ -75,7 +77,7 @@ class EditRedirectTest extends TestCase
     #[DataProvider('editScreens')]
     public function test_the_edit_is_written_before_the_redirect(string $page, string $resource, string $model, string $field): void
     {
-        $record = $model::factory()->create();
+        $record = $this->savable($model);
 
         Livewire::actingAs($this->superAdmin())
             ->test($page, ['record' => $record->getKey()])
@@ -107,5 +109,32 @@ class EditRedirectTest extends TestCase
             ->call('save')
             ->assertHasNoFormErrors()
             ->assertNoRedirect();
+    }
+
+    /**
+     * A record whose edit form passes validation untouched.
+     *
+     * The tests above press Simpan on a form they did not fill, so anything the
+     * factory leaves out of a required field fails validation and the redirect
+     * is never reached — a failure that reads as "the trait is missing" when it
+     * is nothing of the sort.
+     *
+     * Transaksi is the case today: source_id is nullable in the column, because
+     * rows recorded before sumber dana existed genuinely have no answer, while
+     * the form requires it of everything recorded from now on.
+     * TransactionFactory follows the column rather than the form, so the source
+     * is attached here.
+     *
+     * @param  class-string<Model>  $model
+     */
+    private function savable(string $model): Model
+    {
+        $factory = $model::factory();
+
+        if ($model === Transaction::class) {
+            $factory = $factory->for(Source::factory(), 'source');
+        }
+
+        return $factory->create();
     }
 }

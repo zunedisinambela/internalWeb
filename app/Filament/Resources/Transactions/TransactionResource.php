@@ -54,13 +54,13 @@ class TransactionResource extends Resource
     }
 
     /**
-     * Both relations are rendered on every row — the recorder's name in a column
-     * and the receipts in a stacked image column — so they are loaded once per
-     * page instead of once per row.
+     * Every one of these is rendered on every row — the recorder's name and the
+     * source in their own columns, the receipts in a stacked image column — so
+     * they are loaded once per page instead of once per row.
      */
     public static function getEloquentQuery(): Builder
     {
-        return parent::getEloquentQuery()->with(['user', 'media']);
+        return parent::getEloquentQuery()->with(['user', 'source', 'media']);
     }
 
     /**

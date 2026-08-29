@@ -40,6 +40,16 @@ class TransactionInfolist
                             ->label('Tanggal dan waktu')
                             ->dateTime('d M Y H:i'),
 
+                        TextEntry::make('source.name')
+                            ->label('Sumber dana')
+                            ->badge()
+                            ->color('gray')
+                            // Sama seperti kolomnya di daftar: nullable karena
+                            // baris lama tidak punya jawaban, dan itu harus
+                            // terbaca sebagai catatan lama, bukan sebagai sel
+                            // yang lupa diisi.
+                            ->placeholder('Tidak diketahui'),
+
                         TextEntry::make('description')
                             ->label('Keterangan')
                             ->columnSpanFull(),
