@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>Tidak ada koneksi &middot; Internal Web</title>
+    <!--
+        Everything here is inline on purpose. This page is shown precisely when
+        the network is gone, so a stylesheet, a font file or an icon fetched by
+        URL would be a blank screen instead of an explanation.
+    -->
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #fafafa;
+            --card: #ffffff;
+            --ink: #09090b;
+            --muted: #52525b;
+            --line: #e4e4e7;
+            --brand: #f59e0b;
+            --brand-ink: #451a03;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #09090b;
+                --card: #18181b;
+                --ink: #fafafa;
+                --muted: #a1a1aa;
+                --line: #27272a;
+            }
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100dvh;
+            display: grid;
+            place-items: center;
+            padding: 1.5rem;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .card {
+            width: 100%;
+            max-width: 24rem;
+            padding: 2rem 1.75rem;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 0.75rem;
+            text-align: center;
+        }
+
+        .mark {
+            width: 4rem;
+            height: 4rem;
+            margin: 0 auto 1.25rem;
+            display: grid;
+            place-items: center;
+            border-radius: 1rem;
+            background: var(--brand);
+            color: var(--brand-ink);
+            font-size: 1.5rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+        }
+
+        h1 {
+            margin: 0 0 0.5rem;
+            font-size: 1.125rem;
+            font-weight: 600;
+        }
+
+        p {
+            margin: 0 0 1.5rem;
+            color: var(--muted);
+            font-size: 0.875rem;
+        }
+
+        button {
+            width: 100%;
+            padding: 0.625rem 1rem;
+            border: 0;
+            border-radius: 0.5rem;
+            background: var(--brand);
+            color: var(--brand-ink);
+            font: inherit;
+            font-weight: 600;
+            font-size: 0.875rem;
+            cursor: pointer;
+        }
+
+        button:hover { filter: brightness(0.95); }
+        button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+    </style>
+</head>
+<body>
+    <main class="card">
+        <div class="mark" aria-hidden="true">IW</div>
+        <h1>Tidak ada koneksi</h1>
+        <p>
+            Perangkat sedang tidak terhubung ke jaringan, jadi halaman ini tidak
+            bisa dimuat. Data tidak disimpan di perangkat &mdash; setiap angka
+            selalu diambil langsung dari server supaya tidak ada saldo basi.
+        </p>
+        <button type="button" onclick="location.reload()">Coba lagi</button>
+    </main>
+</body>
+</html>

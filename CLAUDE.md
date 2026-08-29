@@ -173,6 +173,7 @@ expensive to undo.
 | `docs/pdf.md` | dompdf, `resources/views/pdf/`, the four reports and their shared partials | dompdf's `chroot` is `base_path()` with `file://` allowed, so user text interpolated into a PDF view can reach `.env`. Escape with `{{ }}`, never `{!! !!}` — an image `src` included, since it is assembled from an uploaded file name. |
 | `docs/spreadsheet.md` | maatwebsite/excel v4, `App\Exports\`, the `ReportExport` base | `Worksheet::fromArray()` drops every `0` unless the export implements `WithStrictNullComparison`. Silently — the cell is simply never created. |
 | `docs/tests.md` | what each test file locks in, and how to test Filament, PDFs, spreadsheets and signed URLs | Any test that hits a route needs `RefreshDatabase`: every page request writes a visit row. |
+| `docs/pwa.md` | installing the panel to an Android or iOS home screen — manifest, icons, service worker | The worker caches the offline page and **nothing else**: a cached saldo cannot be marked stale, and a replayed page carries a dead CSRF token. iOS reads none of the manifest's icons and never offers an install prompt. |
 
 The three features that exist for their own sake are Keuangan, Listrik kost and Oriflame;
 everything else in this panel is there to keep them honest.

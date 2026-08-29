@@ -109,6 +109,15 @@ class AdminPanelProvider extends PanelProvider
                 PanelsRenderHook::BODY_END,
                 fn (): View => view('filament.lightbox'),
             )
+            // Manifest, icons and the service worker registration, which turn
+            // the panel into something installable to an Android or iOS home
+            // screen. HEAD_END rather than BODY_END: a manifest discovered
+            // after the page has rendered is a manifest the install prompt has
+            // already decided without. See docs/pwa.md.
+            ->renderHook(
+                PanelsRenderHook::HEAD_END,
+                fn (): View => view('filament.pwa'),
+            )
             ->plugins([
                 FilamentShieldPlugin::make(),
             ])
